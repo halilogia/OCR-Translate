@@ -40,6 +40,48 @@ def _has_command(cmd: str) -> bool:
     return shutil.which(cmd) is not None
 
 
+# region Wayland — Qt Native (KDE/Gnome - En Hızlı)
+
+
+def _capture_region_qt(region: Region) -> np.ndarray:
+    """Qt'nun kendi screen grab fonksiyonu ile hızlı yakalama."""
+    try:
+        from PyQt5.QtWidgets import QApplication
+        from PyQt5.QtCore import QRect
+        from PyQt5.QtGui import QScreen
+
+        app = QApplication.instance()
+        if not app:
+            raise RuntimeError("QApplication yok")
+
+        screen = app.primaryScreen()
+        if not screen:
+            raise RuntimeError("Ekran bulunamadı")
+
+        # Bölgeyi yakala
+        rect = QRect(region["left"], region["top"], region["width"], region["height"])
+        pixmap = screen.grabWindow(0, rect.x(), rect.y(), rect.width(), rect.height())
+
+        if pixmap.isNull():
+            raise RuntimeError("Pixmap boş")
+
+        # QPixmap -> numpy array
+        qimage = pixmap.toImage().convertToFormat(5)  # Format_RGB888
+        width = qimage.width()
+        height = qimage.height()
+        ptr = qimage.bits()
+        ptr.setsize(height * width * 3)
+        arr = np.frombuffer(ptr, np.uint8).reshape((height, width, 3))
+
+        return arr.copy()  # Copy gerekli çünkü QImage silinebilir
+    except Exception as e:
+        logger.warning(f"Qt capture başarısız: {e}")
+        raise
+
+
+# endregion
+
+
 # region Wayland — spectacle (KDE Plasma)
 
 
@@ -218,11 +260,11 @@ def _capture_region_kwin_6(uuid: str) -> np.ndarray:
 
     try:
         # AAA Implementation: KWin 6 ScreenShot2 (Direct)
-        # Not: CaptureWindow metodu bir dosya yolu veya handle bekler. 
+        # Not: CaptureWindow metodu bir dosya yolu veya handle bekler.
         # En basit ve stabil yol spectacle üzerinden bu API'yi tetiklemektir.
         cmd = ["spectacle", "-b", "-n", "-o", tmp_path, "--window", uuid]
         result = subprocess.run(cmd, capture_output=True, timeout=10)
-        
+
         if result.returncode != 0:
             # Fallback: UUID ile başarısız olursa normal pencere yakalama dene
             cmd = ["spectacle", "-b", "-n", "-o", tmp_path, "-w"]
@@ -285,13 +327,19 @@ def _capture_region_aura(node_id: int) -> np.ndarray:
         # AAA Command: Zero-Overlap & Alt-Tab Safe
         cmd = [
             "gst-launch-1.0",
-            "pipewiresrc", f"target-object={node_id}", "num-buffers=1", "!",
-            "videoconvert", "!",
-            "pngenc", "!",
-            "filesink", f"location={tmp_path}"
+            "pipewiresrc",
+            f"target-object={node_id}",
+            "num-buffers=1",
+            "!",
+            "videoconvert",
+            "!",
+            "pngenc",
+            "!",
+            "filesink",
+            f"location={tmp_path}",
         ]
         result = subprocess.run(cmd, capture_output=True, timeout=5)
-        
+
         if result.returncode != 0:
             raise RuntimeError(f"GStreamer hatası: {result.stderr.decode()}")
 
@@ -308,10 +356,12 @@ def _capture_region_aura(node_id: int) -> np.ndarray:
 _WORKING_BACKEND: str = ""
 
 
-def capture_region(region: Region, node_id: Optional[int] = None, uuid: Optional[str] = None) -> np.ndarray:
+def capture_region(
+    region: Region, node_id: Optional[int] = None, uuid: Optional[str] = None
+) -> np.ndarray:
     """Belirtilen ekran bölgesinin görüntüsünü numpy array (RGB) olarak döner."""
     global _WORKING_BACKEND
-    
+
     method = getattr(config, "CAPTURE_METHOD", "auto")
 
     # 1. Aura Pipewire Önceliği (Sovereign Mode)
@@ -319,18 +369,27 @@ def capture_region(region: Region, node_id: Optional[int] = None, uuid: Optional
         try:
             return _capture_region_aura(node_id)
         except Exception as e:
-            logger.warning(f"Aura (Pipewire) yakalama başarısız, standart yönteme dönülüyor: {e}")
+            logger.warning(
+                f"Aura (Pipewire) yakalama başarısız, standart yönteme dönülüyor: {e}"
+            )
 
-    # 2. KDE 6 ScreenShot2 Önceliği (Sovereign Mode)
+    # 2. Qt Native - En hızlı yöntem (Wayland/X11)
+    if method == "auto" or method == "qt":
+        try:
+            return _capture_region_qt(region)
+        except Exception as e:
+            logger.debug(f"Qt capture başarısız: {e}")
+
+    # 3. KDE 6 ScreenShot2 Önceliği (Pencere bazlı)
     if (method == "auto" or method == "kde") and uuid:
         try:
             return _capture_region_kwin_6(uuid)
         except Exception as e:
-            logger.warning(f"KDE 6 (ScreenShot2) yakalama başarısız, standart yönteme dönülüyor: {e}")
+            logger.warning(
+                f"KDE 6 (ScreenShot2) yakalama başarısız, standart yönteme dönülüyor: {e}"
+            )
 
-    # 3. Önceden çalışan bir backend varsa onu kullan
-
-    # 2. Önceden çalışan bir backend varsa onu kullan
+    # 4. Önceden çalışan bir backend varsa onu kullan
     if _WORKING_BACKEND:
         try:
             if _WORKING_BACKEND == "grim":
@@ -344,7 +403,7 @@ def capture_region(region: Region, node_id: Optional[int] = None, uuid: Optional
             )
             _WORKING_BACKEND = ""
 
-    # 2. Backend bul ve dene
+    # 5. Backend bul ve dene
     backend = _get_backend()
     try:
         if backend == "grim":
@@ -353,7 +412,6 @@ def capture_region(region: Region, node_id: Optional[int] = None, uuid: Optional
             return res
     except Exception as e:
         logger.error(f"Grim başarısız, spectacle'a düşülüyor: {e}")
-        # Grim başarısızsa spectacle'ı zorla (fallback)
         if _has_command("spectacle"):
             _WORKING_BACKEND = "spectacle"
             return _capture_region_spectacle(region)

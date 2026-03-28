@@ -386,7 +386,10 @@ class SettingsPanel(QWidget):
         er.addStretch()
         self.engine_combo = QComboBox()
         self.engine_combo.setFixedWidth(120)
-        self.engine_combo.addItems(["easyocr", "tesseract", "vision"])
+        # Yeni OCR motorları eklendi
+        self.engine_combo.addItems(
+            ["easyocr", "tesseract", "vision", "manga", "paddle"]
+        )
         self.engine_combo.setStyleSheet(self._combo_style())
         er.addWidget(self.engine_combo)
         sl.addLayout(er)
@@ -449,6 +452,35 @@ class SettingsPanel(QWidget):
             "color: white; font-weight: bold; margin-top: 10px;"
         )
         sl.addWidget(self.refiner_check)
+
+        # Bubble Detection Toggle
+        self.bubble_check = QCheckBox(
+            _("enable_bubble_detection")
+            if hasattr(_, "enable_bubble_detection")
+            else "Konuşma Balonu Tespiti"
+        )
+        self.bubble_check.setStyleSheet(
+            "color: white; font-weight: bold; margin-top: 5px;"
+        )
+        self.bubble_check.setToolTip(
+            "Manga/manhwa konuşma balonlarını otomatik tespit eder"
+        )
+        sl.addWidget(self.bubble_check)
+
+        # UI Filter Toggle
+        self.ui_filter_check = QCheckBox(
+            _("enable_ui_filter")
+            if hasattr(_, "enable_ui_filter")
+            else "UI Gürültü Filtreleme"
+        )
+        self.ui_filter_check.setStyleSheet(
+            "color: white; font-weight: bold; margin-top: 5px;"
+        )
+        self.ui_filter_check.setToolTip(
+            "Toolbar, adres çubuğu, sidebar gibi UI elementlerini filtreler"
+        )
+        self.ui_filter_check.setChecked(True)  # Varsayılan olarak aktif
+        sl.addWidget(self.ui_filter_check)
 
         layout.addWidget(self.card)
 
@@ -736,6 +768,8 @@ class MainDashboard(QMainWindow):
         self.btn_model_test = self.settings_page.btn_model_test
         self.vision_combo = self.settings_page.vision_combo
         self.refiner_check = self.settings_page.refiner_check
+        self.bubble_check = self.settings_page.bubble_check
+        self.ui_filter_check = self.settings_page.ui_filter_check
         self.ollama_status = self.home_page.ollama_status
         self.target_label = self.home_page.target_label
         self.btn_toggle = self.home_page.btn_toggle
@@ -761,6 +795,10 @@ class MainDashboard(QMainWindow):
             self.method_combo.setCurrentIndex(idx_c)
 
         self.refiner_check.setChecked(self._enable_refiner)
+
+        # Yeni ayarları yükle
+        self.bubble_check.setChecked(getattr(config, "ENABLE_BUBBLE_DETECTION", False))
+        self.ui_filter_check.setChecked(getattr(config, "ENABLE_UI_FILTER", True))
         # endregion
 
     def _connect_signals(self) -> None:
@@ -779,6 +817,8 @@ class MainDashboard(QMainWindow):
         self.home_page.output_mode_changed.connect(self._on_overlay_mode_changed)
         self.method_combo.currentIndexChanged.connect(self._on_capture_method_changed)
         self.refiner_check.toggled.connect(self._on_refiner_toggled)
+        self.bubble_check.toggled.connect(self._on_bubble_detection_toggled)
+        self.ui_filter_check.toggled.connect(self._on_ui_filter_toggled)
         self.interval_spin.valueChanged.connect(self._on_spin_changed)
 
         self.btn_refresh.clicked.connect(self.refresh_ollama_status)
@@ -895,6 +935,12 @@ class MainDashboard(QMainWindow):
         self.overlay_mode_changed.emit(text)
         # HomePanel butonlarını senkronize et (silent: döngüye girmemesi için)
         self.home_page._on_output_mode_changed(text, silent=True)
+        # SettingsPanel combo'yu da senkronize et
+        idx = self.overlay_combo.findText(text)
+        if idx >= 0 and self.overlay_combo.currentIndex() != idx:
+            self.overlay_combo.blockSignals(True)
+            self.overlay_combo.setCurrentIndex(idx)
+            self.overlay_combo.blockSignals(False)
 
     def _on_capture_method_changed(self, index):
         method = self.method_combo.itemData(index)
@@ -910,6 +956,18 @@ class MainDashboard(QMainWindow):
         logger.info(
             "[UI] AI Metin Düzeltme (Refiner): %s", "AÇIK" if checked else "KAPALI"
         )
+
+    def _on_bubble_detection_toggled(self, checked):
+        """Konuşma balonu tespiti toggle'ı."""
+        config.ENABLE_BUBBLE_DETECTION = checked
+        storage.update_setting("enable_bubble_detection", checked)
+        logger.info("[UI] Konuşma Balonu Tespiti: %s", "AÇIK" if checked else "KAPALI")
+
+    def _on_ui_filter_toggled(self, checked):
+        """UI gürültü filtreleme toggle'ı."""
+        config.ENABLE_UI_FILTER = checked
+        storage.update_setting("enable_ui_filter", checked)
+        logger.info("[UI] UI Gürültü Filtreleme: %s", "AÇIK" if checked else "KAPALI")
 
     def set_target_name(self, name: str):
         """Hedef uygulama adını UI'da günceller."""

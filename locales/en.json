@@ -59,15 +59,15 @@
     "shortcut_stop": "Stop Translation",
     "shortcut_stop_desc": "Immediately stop active translation",
     "shortcut_overlay_modes": "Overlay Modes",
-    "shortcut_overlay_bottom_desc": "Show translation below the selected area (Cinema)",
-    "shortcut_overlay_inplace_desc": "Write translation over original text (MORT)",
+    "shortcut_overlay_bottom_desc": "",
+    "shortcut_overlay_inplace_desc": "",
     "shortcut_tips": "Tips",
     "shortcut_tip_1": "Aura mode captures in background, app stays visible",
     "shortcut_tip_2": "Cache avoids re-translating the same text, saves time",
     "shortcut_tip_3": "When Refiner is on, OCR errors are fixed by AI",
     "output_mode_label": "OUTPUT MODE:",
     "output_mode_inplace": "Over Text",
-    "output_mode_inplace_desc": "Place translation directly over original text (MORT)",
+    "output_mode_inplace_desc": "",
     "output_mode_below": "Below Area",
-    "output_mode_below_desc": "Show translation below the selected area (Cinema)"
+    "output_mode_below_desc": ""
 }

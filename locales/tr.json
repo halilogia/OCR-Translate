@@ -59,15 +59,15 @@
     "shortcut_stop": "Çeviriyi Durdur",
     "shortcut_stop_desc": "Aktif çeviriyi anında durdurur",
     "shortcut_overlay_modes": "Overlay Modları",
-    "shortcut_overlay_bottom_desc": "Çeviriyi seçili alanın altında göster (Sinema modu)",
-    "shortcut_overlay_inplace_desc": "Çeviriyi metnin tam üzerine yaz (MORT modu)",
+    "shortcut_overlay_bottom_desc": "",
+    "shortcut_overlay_inplace_desc": "",
     "shortcut_tips": "İpuçları",
     "shortcut_tip_1": "Aura modunda arka plan yakalama yapılır, uygulama gizlenmez",
     "shortcut_tip_2": "Cache aynı metni tekrar tekrar çevirmez, hız kazandırır",
     "shortcut_tip_3": "Refiner açıkken OCR hataları AI ile düzeltilir",
     "output_mode_label": "ÇIKTI MODU:",
     "output_mode_inplace": "Metin Üzerine Yaz",
-    "output_mode_inplace_desc": "Çeviriyi orijinal metnin tam üzerine koyar (MORT)",
+    "output_mode_inplace_desc": "",
     "output_mode_below": "Altına Göster",
-    "output_mode_below_desc": "Çeviriyi seçili alanın altında gösterir (Sinema)"
+    "output_mode_below_desc": ""
 }

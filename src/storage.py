@@ -10,12 +10,12 @@ SETTINGS_FILE = os.path.join(os.path.dirname(__file__), "settings.json")
 
 DEFAULT_SETTINGS = {
     "model": "gemma3:4b",
-    "interval": 750,
-    "ocr_engine_type": "easyocr",
+    "interval": 1000,  # Performans için artırıldı
+    "ocr_engine_type": "tesseract",  # İngilizce çizgi roman için en hızlı
     "overlay_mode": "inplace",
     "vision_model": "glm-ocr",
     "capture_method": "auto",
-    "enable_refiner": True,
+    "enable_refiner": False,  # Performans için devre dışı
 }
 
 

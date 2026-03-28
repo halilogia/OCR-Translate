@@ -35,14 +35,39 @@ class TranslationOverlay(QWidget):
     def _setup_window(self) -> None:
         # Wayland/X11 uyumluluğu
         is_wayland = "wayland" in os.environ.get("XDG_SESSION_TYPE", "").lower()
-        flags = Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
-        if not is_wayland:
-            flags |= Qt.X11BypassWindowManagerHint
+
+        # Temel bayraklar - WindowTransparentForInput Wayland'da mouse passthrough için kritik
+        flags = (
+            Qt.FramelessWindowHint
+            | Qt.WindowStaysOnTopHint
+            | Qt.WindowTransparentForInput
+        )
+
+        if is_wayland:
+            # Wayland: Tool penceresi
+            flags |= Qt.Tool
+        else:
+            # X11: Klasik bypass
+            flags |= Qt.Tool | Qt.X11BypassWindowManagerHint
 
         self.setWindowFlags(flags)
+
+        # Şeffaflık attribute'ları
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+        self.setAttribute(Qt.WA_NoSystemBackground, True)
+
+        # Input region'ı boş yap - tüm input'lar altındaki pencereye geçsin
+        if is_wayland:
+            # KDE Wayland için ek input passthrough
+            self.setWindowOpacity(1.0)
+            # Mask'ı boş yap - hiçbir piksel input almaz
+            from PyQt5.QtGui import QRegion
+
+            self.setMask(QRegion())  # Boş region = tüm input pass-through
+
+        print(f"[OVERLAY] Setup: Wayland={is_wayland}, InputPassthrough=True")
 
     def update_text(self, text: str) -> None:
         if config.OVERLAY_MODE == "inplace":
@@ -58,10 +83,33 @@ class TranslationOverlay(QWidget):
         self.update()
 
     def update_blocks(self, blocks: list) -> None:
-        """MORT-Style: Koordinatlı blokları günceller."""
+        """MORT-Style: Koordinatlı blokları günceller.
+
+        Blok koordinatları yakalanan görüntüye görelidir.
+        Overlay seçili bölgenin üzerinde konumlandırılır ve koordinatlar
+        region offset ile düzeltilir.
+        """
         if config.OVERLAY_MODE != "inplace":
             return
-        self._blocks = blocks
+
+        # Blok koordinatlarını region offset ile düzelt
+        adjusted_blocks = []
+        for b in blocks:
+            bx = b["box"]  # [x, y, w, h] - görüntüye göreli
+            adjusted_blocks.append(
+                {
+                    "text": b["text"],
+                    "box": [
+                        bx[0] + self._region["left"],  # x + region.left
+                        bx[1] + self._region["top"],  # y + region.top
+                        bx[2],  # width aynı kalır
+                        bx[3],  # height aynı kalır
+                    ],
+                    "bg": b.get("bg", (0, 0, 0)),
+                }
+            )
+
+        self._blocks = adjusted_blocks
         if self._blocks:
             # Tüm ekranı kapsayacak şekilde genişle (Bloklar bu alanın içindedir)
             screen = QApplication.primaryScreen()
@@ -119,25 +167,25 @@ class TranslationOverlay(QWidget):
 
         # 1. MORT-Style Multi-block Rendering
         if self._blocks:
-            for b in self._blocks:
+            for idx, b in enumerate(self._blocks):
                 txt = b["text"]
-                bx = b["box"]  # [x, y, w, h] (Orijinal resimdeki)
+                bx = b["box"]  # [x, y, w, h] (Region offset'i uygulanmış)
                 bg = b.get("bg", (0, 0, 0))
 
                 # Koordinatları overlay penceresine uyarla
                 rect = QRectF(bx[0], bx[1], bx[2], bx[3]).adjusted(-5, -2, 5, 2)
 
-                # Arka Plan Maskeleme (Natural Masking)
-                p.setBrush(QColor(*bg, 230))  # Hafif şeffaf ama kapatıcı
+                # Arka Plan Maskeleme (Natural Masking) - Orijinal metni tamamen kapat
+                p.setBrush(QColor(*bg, 245))
                 p.setPen(Qt.NoPen)
-                p.drawRoundedRect(rect, 5, 5)
+                p.drawRoundedRect(rect, 4, 4)
 
                 # Dinamik font boyutu: Blok boyutuna ve metin uzunluğuna göre ayarla
                 font = self._get_fitted_font(txt, rect)
                 p.setFont(font)
 
-                # Metin Çizimi (Outline + Fill)
-                self._draw_outlined_text(p, rect, txt, font)
+                # Metin Çizimi (Outline + Fill) - Otomatik kontrast
+                self._draw_outlined_text(p, rect, txt, font, bg_color=bg)
 
         # 2. Klasik Tek Blok Rendering (Legacy/Cinema Mode)
         elif self._text:
@@ -185,15 +233,43 @@ class TranslationOverlay(QWidget):
         f.setLetterSpacing(QFont.PercentageSpacing, 105)
         return f
 
+    def _get_contrast_colors(self, bg_color: tuple) -> tuple:
+        """Arka plan rengine göre kontrast metin ve outline rengi hesaplar.
+
+        Returns:
+            (text_color, outline_color) - QColor tuple
+        """
+        r, g, b = bg_color[:3]
+        # Luminance hesabı (ITU-R BT.709)
+        luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+        if luminance > 128:
+            # Açık arka plan -> Koyu metin
+            return (QColor(0, 0, 0), QColor(255, 255, 255))
+        else:
+            # Koyu arka plan -> Açık metin
+            return (QColor(255, 255, 255), QColor(0, 0, 0))
+
     def _draw_outlined_text(
-        self, p: QPainter, rect: QRectF, text: str, font: QFont
+        self, p: QPainter, rect: QRectF, text: str, font: QFont, bg_color: tuple = None
     ) -> None:
-        """Outline efektli metin çizer (offset ile)."""
+        """Outline efektli metin çizer (offset ile).
+
+        Args:
+            bg_color: Arka plan rengi (r, g, b) - otomatik kontrast için
+        """
         p.setFont(font)
         off = max(1, font.pointSize() // 12)  # Font boyutuna göre outline kalınlığı
 
+        # Kontrast renkleri hesapla
+        if bg_color:
+            text_color, outline_color = self._get_contrast_colors(bg_color)
+        else:
+            text_color = QColor(config.OVERLAY_FONT_COLOR)
+            outline_color = QColor(config.OVERLAY_OUTLINE_COLOR)
+
         # Outline (4 yöne offset ile)
-        p.setPen(QColor(config.OVERLAY_OUTLINE_COLOR))
+        p.setPen(outline_color)
         for dx, dy in [(-off, 0), (off, 0), (0, -off), (0, off)]:
             p.drawText(rect.translated(dx, dy), Qt.AlignCenter | Qt.TextWordWrap, text)
 
@@ -208,7 +284,7 @@ class TranslationOverlay(QWidget):
             p.drawText(rect.translated(dx, dy), Qt.AlignCenter | Qt.TextWordWrap, text)
 
         # Ana metin
-        p.setPen(QColor(config.OVERLAY_FONT_COLOR))
+        p.setPen(text_color)
         p.drawText(rect, Qt.AlignCenter | Qt.TextWordWrap, text)
 
     def _get_font(self) -> QFont:

@@ -1,14 +1,14 @@
 """
-OCR-TRANSLATE — Dual-Engine OCR Motoru (AAA Architecture)
-Hem Tesseract hem EasyOCR desteği sunan esnek, nesne yönelimli mimari.
-İlham: tomkam1702/OCR-Translator
+OCR-TRANSLATE — Multi-Engine OCR Motoru (AAA Architecture v2)
+Manga-OCR, PaddleOCR, EasyOCR ve Tesseract desteği.
+Konuşma balonu tespiti ve akıllı segmentasyon içerir.
 """
 
 import logging
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Tuple
 
 import cv2
 import numpy as np
@@ -20,6 +20,10 @@ import config
 from config import OCR_LANG, OCR_PSM, OCR_ENGINE_TYPE
 
 logger = logging.getLogger(__name__)
+
+# Lazy imports for optional dependencies
+_manga_ocr_instance = None
+_paddle_ocr_instance = None
 
 
 # region VERİ YAPILARI
@@ -61,25 +65,58 @@ class OCREngine(ABC):
 class EasyOCREngine(OCREngine):
     """
     Derin Öğrenme tabanlı EasyOCR motoru.
-    Gürültülü ve karmaşık sahnelerde (oyun içi, düşük ışık) üstündür.
+    Manga, manhwa ve gürültülü sahnelerde (oyun içi, düşük ışık) optimize edilmiştir.
     """
 
     def __init__(self) -> None:
         self._reader = None
         self._gpu = torch.cuda.is_available()
-        self._langs = ["en"] if OCR_LANG == "eng" else [OCR_LANG]
-        logger.info("EasyOCREngine başlatılıyor (GPU=%s)", self._gpu)
+        # Manga/manhwa için çoklu dil desteği
+        self._langs = self._get_optimal_langs()
+        logger.info(
+            "EasyOCREngine başlatılıyor (GPU=%s, langs=%s)", self._gpu, self._langs
+        )
+
+    def _get_optimal_langs(self) -> List[str]:
+        """Manga/manhwa için optimal dil listesi."""
+        base_lang = "en" if OCR_LANG == "eng" else OCR_LANG
+        # Korece manhwa için
+        if base_lang in ["ko", "korean"]:
+            return ["ko", "en"]
+        # Japonca manga için
+        elif base_lang in ["ja", "japanese"]:
+            return ["ja", "en"]
+        # Çince manhua için
+        elif base_lang in ["ch", "ch_sim", "chinese"]:
+            return ["ch_sim", "en"]
+        return [base_lang]
 
     def _get_reader(self):
         if self._reader is None:
-            self._reader = easyocr.Reader(self._langs, gpu=self._gpu)
+            self._reader = easyocr.Reader(
+                self._langs,
+                gpu=self._gpu,
+                model_storage_directory=None,  # Varsayılan cache
+                download_enabled=True,
+            )
         return self._reader
 
     def extract_blocks(self, image: np.ndarray) -> List[TextBlock]:
         try:
             reader = self._get_reader()
             processed = self._preprocess(image)
-            results = reader.readtext(processed)
+
+            # Manga için optimize edilmiş parametreler
+            results = reader.readtext(
+                processed,
+                paragraph=False,  # Paragraf birleştirmeyi biz yapıyoruz
+                min_size=10,  # Küçük metinleri de yakala
+                text_threshold=0.6,  # Daha düşük eşik (stylized fontlar için)
+                low_text=0.3,  # Düşük kontrastlı metinler
+                link_threshold=0.3,  # Kelime bağlantı eşiği
+                canvas_size=2560,  # Daha büyük canvas (detay kaybını önle)
+                mag_ratio=1.5,  # Büyütme oranı
+            )
 
             blocks = []
             for bbox, text, conf in results:
@@ -110,19 +147,43 @@ class EasyOCREngine(OCREngine):
         return " ".join([b.text for b in blocks]).strip()
 
     def _preprocess(self, image: np.ndarray) -> np.ndarray:
-        scaled = _ensure_min_size(image, target_width=1200)
-        # Renkli denoising (EasyOCR renkli girişte daha iyi çalışır)
+        """Manga/manhwa için optimize edilmiş ön işleme."""
+        # 1. Minimum boyut garantisi
+        scaled = _ensure_min_size(image, target_width=1400)
+
+        # 2. Renk uzayı kontrolü
+        if len(scaled.shape) == 2:
+            # Grayscale ise RGB'ye çevir (EasyOCR RGB bekler)
+            scaled = cv2.cvtColor(scaled, cv2.COLOR_GRAY2RGB)
+
+        # 3. Adaptif denoising (manga için hafif)
         try:
-            denoised = cv2.fastNlMeansDenoisingColored(scaled, None, 8, 8, 7, 21)
+            # Manga genellikle temiz çizgi olduğu için hafif denoising
+            denoised = cv2.fastNlMeansDenoisingColored(scaled, None, 5, 5, 7, 15)
         except Exception:
-            denoised = cv2.bilateralFilter(scaled, 9, 75, 75)
-        gray = cv2.cvtColor(denoised, cv2.COLOR_RGB2GRAY)
-        # CLAHE + sharpening kombinasyonu
-        clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
-        enhanced = clahe.apply(gray)
-        # Unsharp mask
-        gaussian = cv2.GaussianBlur(enhanced, (0, 0), 2)
-        return cv2.addWeighted(enhanced, 1.3, gaussian, -0.3, 0)
+            denoised = scaled
+
+        # 4. Kontrast iyileştirme (LAB renk uzayında)
+        try:
+            lab = cv2.cvtColor(denoised, cv2.COLOR_RGB2LAB)
+            l, a, b = cv2.split(lab)
+            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+            l = clahe.apply(l)
+            enhanced = cv2.merge([l, a, b])
+            result = cv2.cvtColor(enhanced, cv2.COLOR_LAB2RGB)
+        except Exception:
+            result = denoised
+
+        # 5. Hafif keskinleştirme (metin kenarları için)
+        kernel = (
+            np.array([[-0.5, -0.5, -0.5], [-0.5, 5.0, -0.5], [-0.5, -0.5, -0.5]]) / 1.5
+        )
+        try:
+            result = cv2.filter2D(result, -1, kernel)
+        except Exception:
+            pass
+
+        return result
 
 
 class TesseractEngine(OCREngine):
@@ -404,6 +465,215 @@ class VisionLLMEngine(OCREngine):
             return ""
 
 
+class MangaOCREngine(OCREngine):
+    """
+    Manga-OCR: Japonca manga için özelleştirilmiş en iyi OCR.
+    Kana, Kanji ve stylized fontlarda mükemmel sonuç verir.
+
+    HYBRID MODE: EasyOCR ile koordinat tespiti + MangaOCR ile metin okuma
+    Bu sayede hem doğru koordinatlar hem de doğru Japonca metin elde edilir.
+
+    pip install manga-ocr
+    """
+
+    def __init__(self) -> None:
+        global _manga_ocr_instance
+        logger.info("MangaOCREngine başlatılıyor...")
+        try:
+            from manga_ocr import MangaOcr
+
+            if _manga_ocr_instance is None:
+                _manga_ocr_instance = MangaOcr()
+            self._ocr = _manga_ocr_instance
+            logger.info("MangaOCR başarıyla yüklendi")
+        except ImportError:
+            logger.error("manga-ocr yüklü değil! pip install manga-ocr")
+            self._ocr = None
+
+        # Koordinat tespiti için EasyOCR (Hybrid Mode)
+        self._coord_detector = None
+
+    def _get_coord_detector(self):
+        """Lazy-load koordinat dedektörü (EasyOCR)"""
+        if self._coord_detector is None:
+            self._coord_detector = EasyOCREngine()
+        return self._coord_detector
+
+    def extract_blocks(self, image: np.ndarray) -> List[TextBlock]:
+        """
+        HYBRID MODE:
+        1. EasyOCR ile metin bölgelerinin koordinatlarını tespit et
+        2. Her bölgeyi MangaOCR ile oku (daha doğru Japonca)
+        """
+        if self._ocr is None:
+            logger.warning("MangaOCR yok, sadece EasyOCR kullanılıyor")
+            return self._get_coord_detector().extract_blocks(image)
+
+        # 1. EasyOCR ile koordinatları al
+        coord_blocks = self._get_coord_detector().extract_blocks(image)
+
+        if not coord_blocks:
+            # Fallback: Tüm görüntüyü tek blok olarak işle
+            text = self.extract_text(image)
+            if text:
+                h, w = image.shape[:2]
+                return [TextBlock(text=text, box=[0, 0, w, h], conf=0.95)]
+            return []
+
+        # 2. Her blok için MangaOCR ile metni oku
+        result_blocks = []
+        for block in coord_blocks:
+            x, y, w, h = block.box
+            # Blok bölgesini kırp (padding ekle)
+            pad = 5
+            x1 = max(0, x - pad)
+            y1 = max(0, y - pad)
+            x2 = min(image.shape[1], x + w + pad)
+            y2 = min(image.shape[0], y + h + pad)
+
+            cropped = image[y1:y2, x1:x2]
+
+            if cropped.size == 0:
+                continue
+
+            # MangaOCR ile oku
+            manga_text = self._extract_text_from_crop(cropped)
+
+            if manga_text:
+                result_blocks.append(
+                    TextBlock(
+                        text=manga_text,
+                        box=[x, y, w, h],  # Orijinal koordinatlar
+                        conf=0.95,
+                    )
+                )
+                logger.info(
+                    f"[OCR-Manga-Hybrid] Block ({x},{y},{w},{h}): '{manga_text[:50]}'"
+                )
+            else:
+                # MangaOCR başarısız olursa EasyOCR sonucunu kullan
+                if block.text:
+                    result_blocks.append(block)
+
+        return result_blocks
+
+    def _extract_text_from_crop(self, cropped: np.ndarray) -> str:
+        """Kırpılmış görüntüden MangaOCR ile metin çıkar."""
+        try:
+            from PIL import Image
+
+            if len(cropped.shape) == 2:
+                pil_img = Image.fromarray(cropped)
+            else:
+                pil_img = Image.fromarray(cv2.cvtColor(cropped, cv2.COLOR_BGR2RGB))
+
+            text = self._ocr(pil_img)
+            if text and not _is_garbage(text):
+                return text.strip()
+            return ""
+        except Exception as e:
+            logger.error("MangaOCR crop hatası: %s", e)
+            return ""
+
+    def extract_text(self, image: np.ndarray) -> str:
+        """Tüm görüntüden tek metin çıkar (legacy)."""
+        if self._ocr is None:
+            logger.warning("MangaOCR kullanılamıyor, EasyOCR'a düşülüyor")
+            return self._get_coord_detector().extract_text(image)
+
+        try:
+            from PIL import Image
+
+            if len(image.shape) == 2:
+                pil_img = Image.fromarray(image)
+            else:
+                pil_img = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+
+            text = self._ocr(pil_img)
+            if text and not _is_garbage(text):
+                logger.info("[OCR-Manga] Başarılı: '%s'", text[:100])
+                return text.strip()
+            return ""
+        except Exception as e:
+            logger.error("MangaOCR hatası: %s", e)
+            return ""
+
+
+class PaddleOCREngine(OCREngine):
+    """
+    PaddleOCR: Çok dilli, hızlı ve doğru OCR.
+    Stylized fontlarda ve karmaşık layout'larda çok iyi.
+    pip install paddleocr paddlepaddle
+    """
+
+    def __init__(self) -> None:
+        global _paddle_ocr_instance
+        logger.info("PaddleOCREngine başlatılıyor...")
+        try:
+            from paddleocr import PaddleOCR
+
+            if _paddle_ocr_instance is None:
+                # use_angle_cls: Eğik metin tespiti
+                # lang: 'en' İngilizce, 'ch' Çince, 'japan' Japonca, 'korean' Korece
+                lang = "en" if OCR_LANG == "eng" else OCR_LANG
+                _paddle_ocr_instance = PaddleOCR(
+                    use_angle_cls=True,
+                    lang=lang,
+                    show_log=False,
+                    use_gpu=torch.cuda.is_available(),
+                )
+            self._ocr = _paddle_ocr_instance
+            logger.info("PaddleOCR başarıyla yüklendi (lang=%s)", lang)
+        except ImportError:
+            logger.error("paddleocr yüklü değil! pip install paddleocr paddlepaddle")
+            self._ocr = None
+
+    def extract_blocks(self, image: np.ndarray) -> List[TextBlock]:
+        if self._ocr is None:
+            logger.warning("PaddleOCR kullanılamıyor, EasyOCR'a düşülüyor")
+            return EasyOCREngine().extract_blocks(image)
+
+        try:
+            processed = self._preprocess(image)
+            result = self._ocr.ocr(processed, cls=True)
+
+            if not result or not result[0]:
+                return []
+
+            blocks = []
+            for line in result[0]:
+                bbox, (text, conf) = line
+                text = text.strip()
+
+                if not text or conf < _MIN_CONF_SCORE:
+                    continue
+                if _is_block_noise(text):
+                    continue
+
+                # PaddleOCR bbox: [[x1,y1], [x2,y2], [x3,y3], [x4,y4]]
+                x = int(min(p[0] for p in bbox))
+                y = int(min(p[1] for p in bbox))
+                w = int(max(p[0] for p in bbox) - x)
+                h = int(max(p[1] for p in bbox) - y)
+
+                blocks.append(TextBlock(text=text, box=[x, y, w, h], conf=conf))
+
+            return blocks
+        except Exception as e:
+            logger.error("PaddleOCR hatası: %s", e)
+            return []
+
+    def _preprocess(self, image: np.ndarray) -> np.ndarray:
+        """PaddleOCR için optimize edilmiş ön işleme."""
+        scaled = _ensure_min_size(image, target_width=1200)
+        # Hafif denoising (PaddleOCR kendi içinde de işliyor)
+        try:
+            denoised = cv2.fastNlMeansDenoisingColored(scaled, None, 6, 6, 7, 21)
+        except Exception:
+            denoised = scaled
+        return denoised
+
+
 class OCREngineFactory:
     """Motor seçimini yöneten fabrika sınıfı."""
 
@@ -419,9 +689,31 @@ class OCREngineFactory:
                 cls._instances[engine_type] = TesseractEngine()
             elif engine_type == "vision":
                 cls._instances[engine_type] = VisionLLMEngine()
+            elif engine_type == "manga":
+                cls._instances[engine_type] = MangaOCREngine()
+            elif engine_type == "paddle":
+                cls._instances[engine_type] = PaddleOCREngine()
             else:
                 cls._instances[engine_type] = EasyOCREngine()
         return cls._instances[engine_type]
+
+    @classmethod
+    def available_engines(cls) -> List[str]:
+        """Kullanılabilir OCR motorlarını listeler."""
+        engines = ["easyocr", "tesseract", "vision"]
+        try:
+            from manga_ocr import MangaOcr
+
+            engines.append("manga")
+        except ImportError:
+            pass
+        try:
+            from paddleocr import PaddleOCR
+
+            engines.append("paddle")
+        except ImportError:
+            pass
+        return engines
 
 
 def extract_text(image: np.ndarray) -> str:
@@ -723,6 +1015,234 @@ def _is_technical_noise(text: str) -> bool:
 
     # Metnin çok küçük bir kısmı harfse veya teknik kelime yoğunluğu fazlaysa yoksay
     return count >= 2 or text.strip().startswith(("{", "["))
+
+
+# endregion
+
+
+# region KONUŞMA BALONU TESPİTİ (Speech Bubble Detection)
+
+
+def detect_speech_bubbles(
+    image: np.ndarray, min_area: int = 1000
+) -> List[Tuple[int, int, int, int]]:
+    """
+    Manga/manhwa görüntüsünde konuşma balonlarını tespit eder.
+    Beyaz veya açık renkli kapalı alanları bulur.
+
+    Args:
+        image: RGB numpy array
+        min_area: Minimum balon alanı (piksel²)
+
+    Returns:
+        List of bounding boxes: [(x, y, w, h), ...]
+    """
+    try:
+        # 1. Grayscale'e çevir
+        if len(image.shape) == 3:
+            gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+        else:
+            gray = image.copy()
+
+        # 2. Beyaz/açık alanları bul (konuşma balonları genellikle beyaz)
+        # Adaptive threshold ile değişken aydınlatmaya dayanıklılık
+        binary = cv2.adaptiveThreshold(
+            gray,
+            255,
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY,
+            15,
+            -5,  # Negatif C değeri beyaz alanları vurgular
+        )
+
+        # 3. Morfolojik işlemler: küçük gürültüyü temizle, balonları kapat
+        kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
+        kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+
+        closed = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel_close)
+        opened = cv2.morphologyEx(closed, cv2.MORPH_OPEN, kernel_open)
+
+        # 4. Kontur bulma
+        contours, _ = cv2.findContours(
+            opened, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
+
+        bubbles = []
+        img_h, img_w = image.shape[:2]
+        img_area = img_h * img_w
+
+        for contour in contours:
+            area = cv2.contourArea(contour)
+
+            # Alan filtresi: çok küçük veya çok büyük alanları atla
+            if area < min_area or area > img_area * 0.5:
+                continue
+
+            # Bounding box
+            x, y, w, h = cv2.boundingRect(contour)
+
+            # Aspect ratio filtresi: çok uzun/dar şekilleri atla
+            aspect = w / h if h > 0 else 0
+            if aspect < 0.2 or aspect > 5:
+                continue
+
+            # Compactness: Alan / (Çevre²) - daireler ve ovaller için yüksek
+            perimeter = cv2.arcLength(contour, True)
+            if perimeter > 0:
+                compactness = 4 * np.pi * area / (perimeter**2)
+                if compactness < 0.15:  # Çok düzensiz şekilleri atla
+                    continue
+
+            # İç bölgenin ortalama parlaklığını kontrol et (beyaz olmalı)
+            mask = np.zeros(gray.shape, dtype=np.uint8)
+            cv2.drawContours(mask, [contour], -1, 255, -1)
+            mean_brightness = cv2.mean(gray, mask=mask)[0]
+
+            if mean_brightness < 180:  # Yeterince açık renkli değil
+                continue
+
+            bubbles.append((x, y, w, h))
+
+        # Büyükten küçüğe sırala (öncelikli balonlar)
+        bubbles.sort(key=lambda b: b[2] * b[3], reverse=True)
+
+        logger.info("Tespit edilen konuşma balonu sayısı: %d", len(bubbles))
+        return bubbles
+
+    except Exception as e:
+        logger.error("Konuşma balonu tespiti hatası: %s", e)
+        return []
+
+
+def extract_bubble_regions(
+    image: np.ndarray, bubbles: List[Tuple[int, int, int, int]], padding: int = 5
+) -> List[np.ndarray]:
+    """
+    Tespit edilen balonlardan görüntü bölgelerini çıkarır.
+
+    Args:
+        image: Orijinal görüntü
+        bubbles: Bounding box listesi
+        padding: Ek kenar boşluğu
+
+    Returns:
+        List of cropped images
+    """
+    regions = []
+    img_h, img_w = image.shape[:2]
+
+    for x, y, w, h in bubbles:
+        x1 = max(0, x - padding)
+        y1 = max(0, y - padding)
+        x2 = min(img_w, x + w + padding)
+        y2 = min(img_h, y + h + padding)
+
+        region = image[y1:y2, x1:x2]
+        if region.size > 0:
+            regions.append(region)
+
+    return regions
+
+
+def extract_text_from_bubbles(
+    image: np.ndarray, engine: Optional[OCREngine] = None
+) -> List[TextBlock]:
+    """
+    Konuşma balonlarını tespit edip sadece onlardan OCR yapar.
+    UI elementlerini ve diğer gürültüyü otomatik olarak filtreler.
+
+    Args:
+        image: RGB görüntü
+        engine: Kullanılacak OCR motoru (None ise varsayılan)
+
+    Returns:
+        TextBlock listesi
+    """
+    if engine is None:
+        engine = OCREngineFactory.get_engine()
+
+    # 1. Balonları tespit et
+    bubbles = detect_speech_bubbles(image)
+
+    if not bubbles:
+        # Balon bulunamazsa tüm görüntüyü işle (fallback)
+        logger.info("Konuşma balonu bulunamadı, tüm görüntü işleniyor")
+        return engine.extract_blocks(image)
+
+    # 2. Her balondan OCR yap
+    all_blocks = []
+    for i, (bx, by, bw, bh) in enumerate(bubbles):
+        # Balon bölgesini kırp
+        region = image[by : by + bh, bx : bx + bw]
+        if region.size == 0:
+            continue
+
+        # OCR uygula
+        blocks = engine.extract_blocks(region)
+
+        # Koordinatları orijinal görüntüye göre ayarla
+        for block in blocks:
+            block.box[0] += bx
+            block.box[1] += by
+            all_blocks.append(block)
+
+    logger.info("Balonlardan çıkarılan toplam blok: %d", len(all_blocks))
+    return all_blocks
+
+
+def is_ui_region(image: np.ndarray, box: List[int]) -> bool:
+    """
+    Verilen bölgenin UI elementi olup olmadığını kontrol eder.
+    Toolbar, adres çubuğu, sekme gibi alanları tespit eder.
+    Config'deki değerleri kullanır.
+    """
+    if not getattr(config, "ENABLE_UI_FILTER", True):
+        return False
+
+    x, y, w, h = box
+    img_h, img_w = image.shape[:2]
+
+    top_margin = getattr(config, "UI_TOP_MARGIN", 0.12)
+    bottom_margin = getattr(config, "UI_BOTTOM_MARGIN", 0.05)
+    side_margin = getattr(config, "UI_SIDE_MARGIN", 0.08)
+
+    # Üst alan (toolbar/adres çubuğu/sekme çubuğu)
+    if y < img_h * top_margin and h < img_h * 0.08:
+        return True
+
+    # Alt alan (durum çubuğu)
+    if y > img_h * (1 - bottom_margin):
+        return True
+
+    # Sol/sağ kenarlar (sidebar)
+    if (
+        x < img_w * side_margin or x + w > img_w * (1 - side_margin)
+    ) and w < img_w * 0.12:
+        return True
+
+    # Çok küçük alanlar (ikonlar, düğmeler)
+    if w * h < 400:
+        return True
+
+    # Çok dar veya çok geniş oranlar (menü ögeleri, butonlar)
+    aspect = w / h if h > 0 else 0
+    if aspect > 8 or aspect < 0.1:
+        return True
+
+    return False
+
+
+def filter_ui_blocks(blocks: List[TextBlock], image: np.ndarray) -> List[TextBlock]:
+    """UI elementlerinden gelen blokları filtreler."""
+    filtered = []
+    for block in blocks:
+        if not is_ui_region(image, block.box):
+            filtered.append(block)
+        else:
+            logger.debug(
+                "UI bloğu filtrelendi: %s", block.text[:30] if block.text else ""
+            )
+    return filtered
 
 
 # endregion
