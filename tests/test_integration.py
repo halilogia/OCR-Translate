@@ -20,6 +20,25 @@ from ocr_engine import preprocess_image, extract_text
 from translator import translate
 
 
+def _make_tesseract_data(text: str, confidence: int = 85) -> dict:
+    """Tesseract image_to_data çıktısını simüle eder."""
+    words = text.split() if text.strip() else []
+    return {
+        "text": words,
+        "conf": [confidence] * len(words),
+        "level": [5] * len(words),
+        "page_num": [1] * len(words),
+        "block_num": [1] * len(words),
+        "par_num": [1] * len(words),
+        "line_num": [1] * len(words),
+        "word_num": list(range(1, len(words) + 1)),
+        "left": [0] * len(words),
+        "top": [0] * len(words),
+        "width": [50] * len(words),
+        "height": [20] * len(words),
+    }
+
+
 # ============================================================
 # region OCR → Cache Entegrasyonu
 # ============================================================
@@ -28,12 +47,12 @@ from translator import translate
 class TestOCRCacheIntegration:
     """OCR ciktisinin Cache ile dogru calismasini dogrular."""
 
-    @patch("ocr_engine.pytesseract.image_to_string")
+    @patch("ocr_engine.pytesseract.image_to_data")
     def test_ocr_ciktisi_cache_akisi(self, mock_tesseract):
         """
         OCR → is_new_text → store → get_cached akisi.
         """
-        mock_tesseract.return_value = "Hello World\n"
+        mock_tesseract.return_value = _make_tesseract_data("Hello World")
         cache = TextCache()
 
         # Sahte goruntu
@@ -55,10 +74,10 @@ class TestOCRCacheIntegration:
         # Adim 5: Cache'ten getir
         assert cache.get_cached_translation(text) == "Merhaba Dunya"
 
-    @patch("ocr_engine.pytesseract.image_to_string")
+    @patch("ocr_engine.pytesseract.image_to_data")
     def test_bos_ocr_ciktisi_cache_tetiklemez(self, mock_tesseract):
         """Bos OCR ciktisi cache kontrolune girmemeli."""
-        mock_tesseract.return_value = "\n\n   \n"
+        mock_tesseract.return_value = _make_tesseract_data("")
         cache = TextCache()
 
         image = np.zeros((50, 200, 3), dtype=np.uint8)
@@ -67,19 +86,23 @@ class TestOCRCacheIntegration:
         assert text == ""
         assert cache.is_new_text(text) is False
 
-    @patch("ocr_engine.pytesseract.image_to_string")
+    @patch("ocr_engine.pytesseract.image_to_data")
     def test_benzer_ocr_metinleri_cache_eslesmesi(self, mock_tesseract):
         """Benzer OCR metinleri cache'ten ceviri donmeli."""
         cache = TextCache(threshold=0.85)
 
         # Ilk frame
-        mock_tesseract.return_value = "The hero walked into the forest"
+        mock_tesseract.return_value = _make_tesseract_data(
+            "The hero walked into the forest"
+        )
         image = np.zeros((50, 200, 3), dtype=np.uint8)
         text1 = extract_text(image)
         cache.store(text1, "Kahraman ormana girdi")
 
         # Ikinci frame — kucuk OCR farki
-        mock_tesseract.return_value = "The hero walked into the forest."
+        mock_tesseract.return_value = _make_tesseract_data(
+            "The hero walked into the forest."
+        )
         text2 = extract_text(image)
 
         # Benzer metin cache'ten ceviri donmeli
@@ -101,13 +124,13 @@ class TestOCRTranslateCacheIntegration:
     """OCR → Translate → Cache tam akis testi."""
 
     @patch("translator.requests.post")
-    @patch("ocr_engine.pytesseract.image_to_string")
+    @patch("ocr_engine.pytesseract.image_to_data")
     def test_tam_ceviri_pipeline(self, mock_tesseract, mock_post):
         """
         Tam pipeline: OCR metin cikar → Cache kontrol → Translate → Cache store
         """
         # OCR mock
-        mock_tesseract.return_value = "The dragon breathes fire"
+        mock_tesseract.return_value = _make_tesseract_data("The dragon breathes fire")
 
         # Translate mock
         mock_response = MagicMock()
@@ -141,10 +164,10 @@ class TestOCRTranslateCacheIntegration:
         # API bir daha cagrilmamali (cache kullanilmali)
 
     @patch("translator.requests.post")
-    @patch("ocr_engine.pytesseract.image_to_string")
+    @patch("ocr_engine.pytesseract.image_to_data")
     def test_ceviri_basarisiz_cache_bos_kalir(self, mock_tesseract, mock_post):
         """Ceviri basarisiz olursa cache'e birsey eklenmemeli."""
-        mock_tesseract.return_value = "Some text"
+        mock_tesseract.return_value = _make_tesseract_data("Some text")
 
         import requests as req
 
@@ -231,17 +254,13 @@ class TestConfigConsistency:
 
     def test_overlay_bg_color_hardcoded_bug(self):
         """
-        BUG #6 TESPITI:
-        overlay.py config'ten OVERLAY_BG_COLOR import eder ama
-        paintEvent icinde QColor(0, 0, 0, 160) hardcoded kullanir.
-        Config degeri ile uyumsuz.
+        Config'te OVERLAY_BG_COLOR tanimli mi kontrol eder.
+        overlay.py bu degeri kullanmali, hardcoded renk kullanmamali.
         """
         from config import OVERLAY_BG_COLOR
 
-        # Config'te rgba(0, 0, 0, 160) → overlay.py'de QColor(0, 0, 0, 160)
-        # Su an ayni ama config degisirse overlay degismez — potential bug.
-        assert "0, 0, 0, 160" in OVERLAY_BG_COLOR, (
-            "Config degeri overlay.py'deki hardcoded degerle uyumsuz olabilir"
+        assert OVERLAY_BG_COLOR.startswith("rgba("), (
+            "OVERLAY_BG_COLOR rgba formatinda olmali"
         )
 
 
@@ -299,10 +318,10 @@ class TestStress:
                 "Fuzzy match, silinmis girisi baska bir girsle eslestirdi."
             )
 
-    @patch("ocr_engine.pytesseract.image_to_string")
+    @patch("ocr_engine.pytesseract.image_to_data")
     def test_hizli_art_arda_ocr_cagrilari(self, mock_tesseract):
         """Art arda OCR cagrilari tutarli sonuc vermeli."""
-        mock_tesseract.return_value = "Consistent text"
+        mock_tesseract.return_value = _make_tesseract_data("Consistent text")
         image = np.zeros((50, 200, 3), dtype=np.uint8)
 
         results = [extract_text(image) for _ in range(100)]

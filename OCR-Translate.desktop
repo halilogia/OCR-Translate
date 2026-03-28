@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=OCR Translate
+Comment=AI Screen Translation Tool
+Exec="/home/halile/Masaüstü/GitHub/In Progress/OCR-TRANSLATE/run.sh"
+Icon="/home/halile/Masaüstü/GitHub/In Progress/OCR-TRANSLATE/assets/logo.png"
+Terminal=false
+Type=Application
+Categories=Utility;Translation;
+StartupNotify=true
+Path=/home/halile/Masaüstü/GitHub/In Progress/OCR-TRANSLATE
+GenericName=OCR Translate

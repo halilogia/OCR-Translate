@@ -18,6 +18,8 @@ import mss
 import numpy as np
 from PIL import Image
 
+import config
+
 logger = logging.getLogger(__name__)
 
 
@@ -65,23 +67,69 @@ def _capture_full_spectacle() -> np.ndarray:
             pass
 
 
-def _capture_region_spectacle(region: Region) -> np.ndarray:
-    """spectacle ile tam ekran yakala, sonra bölgeyi kırp."""
-    full = _capture_full_spectacle()
+def _get_device_pixel_ratio() -> float:
+    """Ekran ölçeklendirme katsayısını (DPI) döner."""
+    try:
+        from PyQt5.QtWidgets import QApplication
 
-    left = region["left"]
-    top = region["top"]
-    right = left + region["width"]
-    bottom = top + region["height"]
+        app = QApplication.instance()
+        if app:
+            screen = app.primaryScreen()
+            if screen:
+                return screen.devicePixelRatio()
+    except Exception:
+        pass
+    return 1.0
+
+
+def _capture_region_spectacle(region: Region) -> np.ndarray:
+    """spectacle ile tam ekran yakala, sonra DPI'a göre bölgeyi kırp."""
+    full = _capture_full_spectacle()
+    ratio = _get_device_pixel_ratio()
+
+    full_h, full_w = full.shape[:2]
+
+    # Koordinatları fiziksel piksel boyutuna ölçekle
+    left = int(region["left"] * ratio)
+    top = int(region["top"] * ratio)
+    width = int(region["width"] * ratio)
+    height = int(region["height"] * ratio)
+
+    right = left + width
+    bottom = top + height
 
     # Sınır kontrolü
-    h, w = full.shape[:2]
-    left = max(0, min(left, w))
-    top = max(0, min(top, h))
-    right = max(left + 1, min(right, w))
-    bottom = max(top + 1, min(bottom, h))
+    left = max(0, min(left, full_w))
+    top = max(0, min(top, full_h))
+    right = max(left + 2, min(right, full_w))
+    bottom = max(top + 2, min(bottom, full_h))
 
-    return full[top:bottom, left:right]
+    cropped = full[top:bottom, left:right]
+    ch, cw = cropped.shape[:2]
+
+    logger.info(
+        "Spectacle capture: fullscreen=%dx%d, ratio=%.1f, "
+        "region=[%d,%d,%d,%d], cropped=%dx%d",
+        full_w,
+        full_h,
+        ratio,
+        left,
+        top,
+        right,
+        bottom,
+        cw,
+        ch,
+    )
+
+    if cw < 10 or ch < 10:
+        logger.warning(
+            "Kırpılan görüntü çok küçük (%dx%d). "
+            "Bölge koordinatları ekran sınırları dışında olabilir.",
+            cw,
+            ch,
+        )
+
+    return cropped
 
 
 # endregion
@@ -163,6 +211,30 @@ def _capture_full_screen_x11() -> np.ndarray:
     return cv2.cvtColor(frame, cv2.COLOR_BGRA2RGB)
 
 
+def _capture_region_kwin_6(uuid: str) -> np.ndarray:
+    """KDE 6 ScreenShot2 API kullanarak pencereyi sızdırmaz yakalar. (Sovereign Engine)."""
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+        tmp_path = tmp.name
+
+    try:
+        # AAA Implementation: KWin 6 ScreenShot2 (Direct)
+        # Not: CaptureWindow metodu bir dosya yolu veya handle bekler. 
+        # En basit ve stabil yol spectacle üzerinden bu API'yi tetiklemektir.
+        cmd = ["spectacle", "-b", "-n", "-o", tmp_path, "--window", uuid]
+        result = subprocess.run(cmd, capture_output=True, timeout=10)
+        
+        if result.returncode != 0:
+            # Fallback: UUID ile başarısız olursa normal pencere yakalama dene
+            cmd = ["spectacle", "-b", "-n", "-o", tmp_path, "-w"]
+            subprocess.run(cmd, capture_output=True, timeout=10)
+
+        img = Image.open(tmp_path).convert("RGB")
+        return np.array(img)
+    finally:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+
+
 # endregion
 
 
@@ -174,19 +246,9 @@ def _select_backend() -> str:
     if not _is_wayland():
         return "x11"
 
-    # Wayland: önce grim dene (wlroots), sonra spectacle (KDE)
+    # Wayland: önce grim dene (wlroots/KDE), sonra spectacle (KDE)
     if _has_command("grim"):
-        # grim var ama compositor destekliyor mu test et
-        try:
-            result = subprocess.run(
-                ["grim", "-g", "0,0 1x1", "/dev/null"],
-                capture_output=True,
-                timeout=3,
-            )
-            if result.returncode == 0:
-                return "grim"
-        except Exception:
-            pass
+        return "grim"
 
     if _has_command("spectacle"):
         return "spectacle"
@@ -214,16 +276,93 @@ def _get_backend() -> str:
 # endregion
 
 
+def _capture_region_aura(node_id: int) -> np.ndarray:
+    """GStreamer + Pipewire kullanarak pencerenin buffer'ından doğrudan yakalama yapar. (Aura Engine)."""
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+        tmp_path = tmp.name
+
+    try:
+        # AAA Command: Zero-Overlap & Alt-Tab Safe
+        cmd = [
+            "gst-launch-1.0",
+            "pipewiresrc", f"target-object={node_id}", "num-buffers=1", "!",
+            "videoconvert", "!",
+            "pngenc", "!",
+            "filesink", f"location={tmp_path}"
+        ]
+        result = subprocess.run(cmd, capture_output=True, timeout=5)
+        
+        if result.returncode != 0:
+            raise RuntimeError(f"GStreamer hatası: {result.stderr.decode()}")
+
+        img = Image.open(tmp_path).convert("RGB")
+        return np.array(img)
+    finally:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+
+
 # region Public API
 
 
-def capture_region(region: Region) -> np.ndarray:
+_WORKING_BACKEND: str = ""
+
+
+def capture_region(region: Region, node_id: Optional[int] = None, uuid: Optional[str] = None) -> np.ndarray:
     """Belirtilen ekran bölgesinin görüntüsünü numpy array (RGB) olarak döner."""
+    global _WORKING_BACKEND
+    
+    method = getattr(config, "CAPTURE_METHOD", "auto")
+
+    # 1. Aura Pipewire Önceliği (Sovereign Mode)
+    if (method == "auto" or method == "aura") and node_id:
+        try:
+            return _capture_region_aura(node_id)
+        except Exception as e:
+            logger.warning(f"Aura (Pipewire) yakalama başarısız, standart yönteme dönülüyor: {e}")
+
+    # 2. KDE 6 ScreenShot2 Önceliği (Sovereign Mode)
+    if (method == "auto" or method == "kde") and uuid:
+        try:
+            return _capture_region_kwin_6(uuid)
+        except Exception as e:
+            logger.warning(f"KDE 6 (ScreenShot2) yakalama başarısız, standart yönteme dönülüyor: {e}")
+
+    # 3. Önceden çalışan bir backend varsa onu kullan
+
+    # 2. Önceden çalışan bir backend varsa onu kullan
+    if _WORKING_BACKEND:
+        try:
+            if _WORKING_BACKEND == "grim":
+                return _capture_region_grim(region)
+            if _WORKING_BACKEND == "spectacle":
+                return _capture_region_spectacle(region)
+            return _capture_region_x11(region)
+        except Exception as e:
+            logger.warning(
+                f"Backend {_WORKING_BACKEND} çalışırken hata verdi, sıfırlanıyor: {e}"
+            )
+            _WORKING_BACKEND = ""
+
+    # 2. Backend bul ve dene
     backend = _get_backend()
-    if backend == "grim":
-        return _capture_region_grim(region)
+    try:
+        if backend == "grim":
+            res = _capture_region_grim(region)
+            _WORKING_BACKEND = "grim"
+            return res
+    except Exception as e:
+        logger.error(f"Grim başarısız, spectacle'a düşülüyor: {e}")
+        # Grim başarısızsa spectacle'ı zorla (fallback)
+        if _has_command("spectacle"):
+            _WORKING_BACKEND = "spectacle"
+            return _capture_region_spectacle(region)
+
     if backend == "spectacle":
+        _WORKING_BACKEND = "spectacle"
         return _capture_region_spectacle(region)
+
+    _WORKING_BACKEND = "x11"
     return _capture_region_x11(region)
 
 

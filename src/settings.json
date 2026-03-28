@@ -1,0 +1,8 @@
+{
+    "model": "translategemma:latest",
+    "interval": 150,
+    "ocr_engine_type": "tesseract",
+    "overlay_mode": "inplace",
+    "vision_model": "glm-ocr:latest",
+    "capture_method": "aura"
+}

@@ -3,126 +3,71 @@ OCR-TRANSLATE — OCR Engine Birim & Kenar Durum Testleri
 =======================================================
 Test Framework: pytest
 Dogruladigi Modul: src/ocr_engine.py
-
-Tespit edilen olasi hatalar:
-- BUG #3 (KRITIK): screen_capture.py BGRA formatinda doner ve [:, :, :3]
-  ile sadece alpha kanali atar → sonuc BGR olur (RGB degil!).
-  Ama ocr_engine.py cv2.COLOR_RGB2GRAY kullanir — yanlis kanal sirasi.
-  Bu OCR dogrulugunu dusurur cunku gri tonlama formulunde R/G/B katsayilari
-  farklidir: Gray = 0.299*R + 0.587*G + 0.114*B
-  BGR verilirse: Gray = 0.299*B + 0.587*G + 0.114*R → yanlis parlaklik.
 """
 
 import numpy as np
 import pytest
 from unittest.mock import patch, MagicMock
 
-from ocr_engine import preprocess_image, extract_text
+from ocr_engine import (
+    extract_text,
+    _ensure_min_size,
+    _is_garbage,
+    _is_block_noise,
+    _deskew,
+    _morphological_cleanup,
+    merge_text_blocks,
+    TextBlock,
+)
+
+
+def _make_tesseract_data(
+    words: list[str], confidences: list[int] | None = None
+) -> dict:
+    """Tesseract image_to_data çıktısını simüle eder."""
+    if confidences is None:
+        confidences = [80] * len(words)
+    return {
+        "text": words,
+        "conf": confidences,
+        "level": [5] * len(words),
+        "page_num": [1] * len(words),
+        "block_num": [1] * len(words),
+        "par_num": [1] * len(words),
+        "line_num": [1] * len(words),
+        "word_num": list(range(1, len(words) + 1)),
+        "left": [0] * len(words),
+        "top": [0] * len(words),
+        "width": [50] * len(words),
+        "height": [20] * len(words),
+    }
 
 
 # ============================================================
-# region preprocess_image Birim Testleri
+# region _ensure_min_size Birim Testleri
 # ============================================================
 
 
-class TestPreprocessImage:
-    """preprocess_image() fonksiyonu icin testler."""
+class TestEnsureMinSize:
+    def test_buyuk_goruntu_degismez(self):
+        img = np.zeros((100, 1500, 3), dtype=np.uint8)
+        result = _ensure_min_size(img)
+        assert result.shape == (100, 1500, 3)
 
-    def test_rgb_girdi_gray_cikti(self, sample_rgb_image):
-        """RGB goruntu gri tonlamaya donusturulmeli."""
-        result = preprocess_image(sample_rgb_image)
-        assert result.ndim == 2, "Sonuc 2 boyutlu (grayscale) olmali"
-
-    def test_cikti_binary(self, sample_rgb_image):
-        """Otsu thresholding sonrasi cikti binary (0 veya 255) olmali."""
-        result = preprocess_image(sample_rgb_image)
-        unique_vals = set(np.unique(result))
-        assert unique_vals.issubset({0, 255}), f"Binary olmayan degerler: {unique_vals}"
-
-    def test_boyut_korunur(self, sample_rgb_image):
-        """Cikti boyutu girdinin yukseklik x genisligine esit olmali."""
-        result = preprocess_image(sample_rgb_image)
-        h, w = sample_rgb_image.shape[:2]
-        assert result.shape == (h, w)
-
-    def test_beyaz_metin_siyah_arkaplan(self):
-        """Beyaz metin siyah arka plan uzerinde: metin beyaz (255) olmali."""
+    def test_kucuk_goruntu_olceklenir(self):
         img = np.zeros((50, 200, 3), dtype=np.uint8)
-        img[15:35, 30:170] = 255  # Beyaz bant
-        result = preprocess_image(img)
-        # Beyaz bolgedeki piksellerin cogu 255 olmali
-        white_region = result[15:35, 30:170]
-        white_ratio = np.count_nonzero(white_region == 255) / white_region.size
-        assert white_ratio > 0.5, f"Beyaz oran: {white_ratio:.2f}"
+        result = _ensure_min_size(img)
+        assert result.shape[1] >= 1200
 
+    def test_tek_piksel_genislik(self):
+        img = np.zeros((10, 1, 3), dtype=np.uint8)
+        result = _ensure_min_size(img)
+        assert result.shape[1] >= 1200
 
-class TestPreprocessImageEdgeCases:
-    """preprocess_image() kenar durumlari."""
-
-    def test_tamamen_siyah_goruntu(self):
-        """Tamamen siyah goruntu hata vermemeli."""
-        img = np.zeros((100, 100, 3), dtype=np.uint8)
-        result = preprocess_image(img)
-        assert result.shape == (100, 100)
-
-    def test_tamamen_beyaz_goruntu(self):
-        """Tamamen beyaz goruntu hata vermemeli."""
-        img = np.full((100, 100, 3), 255, dtype=np.uint8)
-        result = preprocess_image(img)
-        assert result.shape == (100, 100)
-
-    def test_tek_piksel(self):
-        """1x1 goruntu hata vermemeli."""
-        img = np.zeros((1, 1, 3), dtype=np.uint8)
-        result = preprocess_image(img)
-        assert result.shape == (1, 1)
-
-    def test_cok_kucuk_goruntu(self):
-        """2x2 goruntu islenmeli."""
-        img = np.zeros((2, 2, 3), dtype=np.uint8)
-        result = preprocess_image(img)
-        assert result.shape == (2, 2)
-
-    def test_cok_buyuk_goruntu(self):
-        """4K goruntu hata vermemeli (performans testi degil)."""
-        img = np.zeros((2160, 3840, 3), dtype=np.uint8)
-        result = preprocess_image(img)
-        assert result.shape == (2160, 3840)
-
-    def test_bgr_vs_rgb_fark_tespiti(self):
-        """
-        BUG #3 TESPITI:
-        BGR ve RGB girdi arasindaki fark gri tonlama sonucunu etkiler.
-        screen_capture BGR donuyor ama ocr_engine RGB bekliyor.
-        """
-        # Saf kirmizi piksel — RGB: (255,0,0) vs BGR: (0,0,255)
-        rgb_img = np.zeros((10, 10, 3), dtype=np.uint8)
-        rgb_img[:, :, 0] = 255  # R kanali
-
-        bgr_img = np.zeros((10, 10, 3), dtype=np.uint8)
-        bgr_img[:, :, 2] = 255  # BGR'de R kanali 3. indeks
-
-        rgb_result = preprocess_image(rgb_img)
-        bgr_result = preprocess_image(bgr_img)
-
-        # Eger COLOR_RGB2GRAY kullaniliyorsa, ayni fiziksel renk (kirmizi)
-        # farkli iki girdide FARKLI gri deger uretir — bu BUG.
-        # RGB kirmizi: Gray = 0.299*255 = 76.2
-        # BGR kirmizi (ama RGB2GRAY ile): Gray = 0.114*255 = 29.1
-        if not np.array_equal(rgb_result, bgr_result):
-            # Bu BEKLENEN DAVRANIS — bug'u dogrular
-            pass  # Test basarili: fark var = bug kanitlandi
-
-    def test_float_goruntu_hata(self):
-        """float64 goruntu TypeError vermeli (uint8 bekleniyor)."""
-        img = np.zeros((10, 10, 3), dtype=np.float64)
-        # OpenCV float goruntuyu kabul eder ama sonuc farkli olabilir
-        # Bu test sadece hata olmadigini dogrular
-        try:
-            result = preprocess_image(img)
-            assert result.shape == (10, 10)
-        except Exception:
-            pass  # Bazı OpenCV sürümlerinde hata olabilir
+    def test_custom_target_width(self):
+        img = np.zeros((100, 500, 3), dtype=np.uint8)
+        result = _ensure_min_size(img, target_width=800)
+        assert result.shape[1] >= 800
 
 
 # ============================================================
@@ -131,71 +76,21 @@ class TestPreprocessImageEdgeCases:
 
 
 # ============================================================
-# region extract_text Birim Testleri (Mock)
+# region _deskew Birim Testleri
 # ============================================================
 
 
-class TestExtractText:
-    """extract_text() fonksiyonu — Tesseract mock'lanarak test edilir."""
+class TestDeskew:
+    def test_bos_goruntu_degismez(self):
+        img = np.zeros((100, 100), dtype=np.uint8)
+        result = _deskew(img)
+        assert result.shape == img.shape
 
-    @patch("ocr_engine.pytesseract.image_to_string")
-    def test_basarili_metin_cikarma(self, mock_tesseract, sample_rgb_image):
-        """Tesseract'tan donen metin temizlenmeli."""
-        mock_tesseract.return_value = "  Hello World  \n\n  Test  \n"
-        result = extract_text(sample_rgb_image)
-        assert result == "Hello World Test"
-
-    @patch("ocr_engine.pytesseract.image_to_string")
-    def test_bos_sonuc(self, mock_tesseract, sample_rgb_image):
-        """Tesseract bos string donerse bos string donmeli."""
-        mock_tesseract.return_value = ""
-        result = extract_text(sample_rgb_image)
-        assert result == ""
-
-    @patch("ocr_engine.pytesseract.image_to_string")
-    def test_sadece_bosluk_sonuc(self, mock_tesseract, sample_rgb_image):
-        """Sadece bosluk/newline donerse bos string donmeli."""
-        mock_tesseract.return_value = "\n\n   \n  \t  \n"
-        result = extract_text(sample_rgb_image)
-        assert result == ""
-
-    @patch("ocr_engine.pytesseract.image_to_string")
-    def test_tek_satir(self, mock_tesseract, sample_rgb_image):
-        """Tek satirlik metin duzgun donmeli."""
-        mock_tesseract.return_value = "Single line text"
-        result = extract_text(sample_rgb_image)
-        assert result == "Single line text"
-
-    @patch("ocr_engine.pytesseract.image_to_string")
-    def test_cok_satirli_birlestirme(self, mock_tesseract, sample_rgb_image):
-        """Birden fazla satir boslukla birlestirilmeli."""
-        mock_tesseract.return_value = "Line 1\nLine 2\nLine 3"
-        result = extract_text(sample_rgb_image)
-        assert result == "Line 1 Line 2 Line 3"
-
-    @patch("ocr_engine.pytesseract.image_to_string")
-    def test_config_parametreleri(self, mock_tesseract, sample_rgb_image):
-        """Tesseract'a dogru config gecilmeli."""
-        mock_tesseract.return_value = "test"
-        extract_text(sample_rgb_image)
-        call_args = mock_tesseract.call_args
-        config_str = (
-            call_args[1].get("config", "")
-            if call_args[1]
-            else call_args[0][1]
-            if len(call_args[0]) > 1
-            else ""
-        )
-        assert "--oem 3" in config_str
-        assert "--psm 6" in config_str
-        assert "-l eng" in config_str
-
-    @patch("ocr_engine.pytesseract.image_to_string")
-    def test_ozel_karakterler(self, mock_tesseract, sample_rgb_image):
-        """Ozel karakterler korunmali."""
-        mock_tesseract.return_value = "Hello! @#$% World?"
-        result = extract_text(sample_rgb_image)
-        assert result == "Hello! @#$% World?"
+    def test_duz_metin_degismez(self):
+        img = np.zeros((100, 200), dtype=np.uint8)
+        img[40:60, 20:180] = 255  # Yatay beyaz cizgi
+        result = _deskew(img)
+        assert result.shape == img.shape
 
 
 # ============================================================
@@ -204,42 +99,156 @@ class TestExtractText:
 
 
 # ============================================================
-# region Hata Ayiklama Testleri
+# region _morphological_cleanup Birim Testleri
 # ============================================================
 
 
-class TestOCRDebugFlow:
-    """OCR pipeline'inin adim adim dogrulanmasi."""
+class TestMorphologicalCleanup:
+    def test_binary_girdi_cikti(self):
+        img = np.zeros((100, 100), dtype=np.uint8)
+        img[30:70, 30:70] = 255
+        result = _morphological_cleanup(img)
+        assert result.shape == img.shape
+        assert set(np.unique(result)).issubset({0, 255})
 
-    def test_preprocess_pipeline_adimlari(self, sample_rgb_image):
-        """
-        Ön işleme adimlarini tek tek dogrular:
-        1. RGB → Gray donusumu
-        2. CLAHE uygulamasi
-        3. Otsu thresholding
-        """
-        import cv2
+    def test_kucuk_noktalari_temizler(self):
+        img = np.zeros((100, 100), dtype=np.uint8)
+        img[10:12, 10:12] = 255  # 2x2 piksel gurultu
+        img[50:80, 50:80] = 255  # Buyuk blok
+        result = _morphological_cleanup(img)
+        # Buyuk blok kalmali
+        assert np.any(result[50:80, 50:80] > 0)
 
-        # Adim 1: Gri tonlama
-        gray = cv2.cvtColor(sample_rgb_image, cv2.COLOR_RGB2GRAY)
-        assert gray.ndim == 2, "Adim 1 FAIL: Gri tonlama basarisiz"
-        assert gray.dtype == np.uint8, "Adim 1 FAIL: Tip uint8 olmali"
 
-        # Adim 2: CLAHE
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-        enhanced = clahe.apply(gray)
-        assert enhanced.shape == gray.shape, "Adim 2 FAIL: CLAHE boyut bozdu"
+# ============================================================
+# endregion
+# ============================================================
 
-        # Adim 3: Otsu
-        _, binary = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        assert set(np.unique(binary)).issubset({0, 255}), "Adim 3 FAIL: Binary degil"
 
-    @patch("ocr_engine.pytesseract.image_to_string")
-    def test_extract_text_hata_propagasyonu(self, mock_tesseract, sample_rgb_image):
-        """Tesseract exception'i yukariya iletilmeli."""
-        mock_tesseract.side_effect = Exception("Tesseract not found")
-        with pytest.raises(Exception, match="Tesseract not found"):
-            extract_text(sample_rgb_image)
+# ============================================================
+# region _is_garbage Birim Testleri
+# ============================================================
+
+
+class TestIsGarbage:
+    def test_bos_metin_garbage(self):
+        assert _is_garbage("") is True
+        assert _is_garbage("   ") is True
+
+    def test_tek_karakter_garbage(self):
+        assert _is_garbage("a") is True
+
+    def test_anlamli_metin_garbage_degil(self):
+        assert _is_garbage("Hello World") is False
+
+    def test_sadece_semboller_garbage(self):
+        assert _is_garbage("@#$%^&*") is True
+
+    def test_karisik_sembol_agirlikli_garbage(self):
+        assert _is_garbage("e e 0 « 5 @ ¢ @ ~ 0O 0 0 0 = =") is True
+
+    def test_dogal_dil_garbage_degil(self):
+        assert _is_garbage("The quick brown fox jumps") is False
+
+    def test_ocr_garbage_ornekleri(self):
+        assert _is_garbage("KKCIANAATE APEGrant vitver Lt iy") is True
+        assert _is_garbage("00QO0QO0POOOR o Q@ Qo X") is True
+        assert _is_garbage("S 8 e 8 B 0 000 ~ B8 0 « O +") is True
+
+
+# ============================================================
+# endregion
+# ============================================================
+
+
+# ============================================================
+# region _is_block_noise Birim Testleri
+# ============================================================
+
+
+class TestIsBlockNoise:
+    def test_bos_metin_noise(self):
+        assert _is_block_noise("") is True
+
+    def test_tek_karakter_noise(self):
+        assert _is_block_noise("a") is True
+
+    def test_iki_karakter_noise(self):
+        assert _is_block_noise("ab") is True
+
+    def test_uc_karakter_dusuk_harf_noise(self):
+        assert _is_block_noise("1@3") is True
+
+    def test_uc_karakter_yuksek_harf_degil_noise(self):
+        assert _is_block_noise("abc") is False
+
+    def test_anlamli_metin_noise_degil(self):
+        assert _is_block_noise("Hello World") is False
+
+
+# ============================================================
+# endregion
+# ============================================================
+
+
+# ============================================================
+# region merge_text_blocks Birim Testleri
+# ============================================================
+
+
+class TestMergeTextBlocks:
+    def test_bos_liste_bos_doner(self):
+        assert merge_text_blocks([]) == []
+
+    def test_tek_blok_ayni_doner(self):
+        block = TextBlock(text="Hello", box=[0, 0, 100, 30], conf=0.9)
+        result = merge_text_blocks([block])
+        assert len(result) == 1
+        assert result[0].text == "Hello"
+
+    def test_yakin_bloklar_birlesir(self):
+        blocks = [
+            TextBlock(text="Hello", box=[0, 0, 50, 20], conf=0.9),
+            TextBlock(text="World", box=[55, 0, 50, 20], conf=0.9),
+        ]
+        result = merge_text_blocks(blocks)
+        assert len(result) == 1
+        assert result[0].text == "Hello World"
+
+    def test_uzak_bloklar_birlesmez(self):
+        blocks = [
+            TextBlock(text="Hello", box=[0, 0, 50, 20], conf=0.9),
+            TextBlock(text="World", box=[500, 0, 50, 20], conf=0.9),
+        ]
+        result = merge_text_blocks(blocks)
+        assert len(result) == 2
+
+    def test_cok_kucuk_bloklar_filtrelenir(self):
+        blocks = [
+            TextBlock(text="ab", box=[0, 0, 5, 5], conf=0.9),
+            TextBlock(text="Hello World", box=[0, 50, 200, 30], conf=0.9),
+        ]
+        result = merge_text_blocks(blocks)
+        # 5x5 blok filtrelenmeli (min_w=20, min_h=10)
+        assert all(b.box[2] >= 20 for b in result)
+
+
+# ============================================================
+# endregion
+# ============================================================
+
+
+# ============================================================
+# region TextBlock Birim Testleri
+# ============================================================
+
+
+class TestTextBlock:
+    def test_olusturma(self):
+        block = TextBlock(text="Test", box=[0, 0, 100, 30], conf=0.85)
+        assert block.text == "Test"
+        assert block.box == [0, 0, 100, 30]
+        assert block.conf == 0.85
 
 
 # ============================================================

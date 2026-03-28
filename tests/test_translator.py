@@ -114,7 +114,7 @@ class TestTranslate:
         call_data = mock_post.call_args[1]["json"]
         assert call_data["stream"] is False
         assert call_data["options"]["temperature"] == 0.3
-        assert call_data["options"]["num_predict"] == 256
+        assert call_data["options"]["num_predict"] == 512
 
 
 # ============================================================

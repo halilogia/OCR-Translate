@@ -13,53 +13,110 @@ from config import OLLAMA_MODEL, OLLAMA_TIMEOUT, OLLAMA_URL, TRANSLATION_PROMPT
 logger = logging.getLogger(__name__)
 
 
-def translate(text: str, model: str = OLLAMA_MODEL) -> str | None:
+def translate(text: str, model: str = OLLAMA_MODEL, retries: int = 2) -> str | None:
     """
     Verilen İngilizce metni Ollama API ile Türkçe'ye çevirir.
-    Başarısız olursa None döner.
+    Başarısız olursa None döner. Retry mekanizması içerir.
     """
     cleaned = text.strip()
     if not cleaned:
         return None
 
-    prompt = TRANSLATION_PROMPT.format(text=cleaned)
+    prompt = TRANSLATION_PROMPT.replace("{text}", cleaned)
     payload = {
         "model": model,
         "prompt": prompt,
         "stream": False,
         "options": {
             "temperature": 0.3,
-            "num_predict": 256,
+            "num_predict": 512,
+            "repeat_penalty": 1.1,
+            "top_p": 0.9,
         },
     }
 
-    try:
-        response = requests.post(
-            OLLAMA_URL,
-            json=payload,
-            timeout=OLLAMA_TIMEOUT,
-        )
-        response.raise_for_status()
+    last_exc = None
+    for attempt in range(retries + 1):
+        try:
+            response = requests.post(
+                OLLAMA_URL,
+                json=payload,
+                timeout=OLLAMA_TIMEOUT,
+            )
+            response.raise_for_status()
 
-        data = response.json()
-        result = data.get("response", "").strip()
+            data = response.json()
+            result = data.get("response", "").strip()
 
-        if result:
-            logger.info("Çeviri başarılı: '%s' → '%s'", cleaned[:50], result[:50])
-            return result
+            if result:
+                # Prompt sızıntısı kontrolü
+                if _is_prompt_leak(result):
+                    logger.warning(
+                        "Çeviri prompt sızıntısı tespit edildi, retry (%d/%d)",
+                        attempt + 1,
+                        retries,
+                    )
+                    continue
+                logger.info("Çeviri başarılı: '%s' → '%s'", cleaned[:50], result[:50])
+                return result
 
-        logger.warning("Ollama boş yanıt döndü")
-        return None
+            logger.warning(
+                "Ollama boş yanıt döndü (attempt %d/%d)", attempt + 1, retries
+            )
+            if attempt < retries:
+                continue
+            return None
 
-    except requests.exceptions.ConnectionError:
-        logger.error("Ollama'ya bağlanılamadı. Servis çalışıyor mu? (%s)", OLLAMA_URL)
-        return None
-    except requests.exceptions.Timeout:
-        logger.error("Ollama yanıt zaman aşımına uğradı (%ds)", OLLAMA_TIMEOUT)
-        return None
-    except (requests.exceptions.RequestException, json.JSONDecodeError) as exc:
-        logger.error("Çeviri hatası: %s", exc)
-        return None
+        except requests.exceptions.ConnectionError as exc:
+            last_exc = exc
+            logger.error(
+                "Ollama'ya bağlanılamadı (attempt %d/%d). Servis çalışıyor mu? (%s)",
+                attempt + 1,
+                retries,
+                OLLAMA_URL,
+            )
+            break
+        except requests.exceptions.Timeout as exc:
+            last_exc = exc
+            logger.error(
+                "Ollama yanıt zaman aşımına uğradı (attempt %d/%d, %ds)",
+                attempt + 1,
+                retries,
+                OLLAMA_TIMEOUT,
+            )
+            if attempt < retries:
+                continue
+        except (requests.exceptions.RequestException, json.JSONDecodeError) as exc:
+            last_exc = exc
+            logger.error("Çeviri hatası (attempt %d/%d): %s", attempt + 1, retries, exc)
+            if attempt < retries:
+                continue
+
+    return None
+
+
+def _is_prompt_leak(text: str) -> bool:
+    """Modelin sistem promptunu döndürüp döndürmediğini kontrol eder."""
+    leak_patterns = [
+        "Atmosfer:",
+        "Gürültüyü",
+        "Diyalog akışı",
+        "Seçici çeviri",
+        "Teknik filtre",
+        "Format:",
+        "Kelime kelime",
+        "duygusal ve dinamik",
+        "Task:",
+        "Guidelines:",
+        "Return ONLY",
+        "DO NOT",
+        "Persona:",
+        "Sen profesyonel bir",
+        "Görev:",
+        "Kurallar:",
+    ]
+    u = text.upper()
+    return any(p.upper() in u for p in leak_patterns)
 
 
 def check_ollama_connection(model: str = OLLAMA_MODEL) -> bool:
@@ -74,9 +131,10 @@ def check_ollama_connection(model: str = OLLAMA_MODEL) -> bool:
         available_models = [m["name"] for m in tags.get("models", [])]
 
         # Model adını normalize et (tag olmadan da eşleş)
+        # BUG FIX #4: Tam eşleşme kontrolü (startswith yerine split(':') kullanıldı)
         model_base = model.split(":")[0]
         model_found = any(
-            m == model or m.startswith(f"{model_base}:") for m in available_models
+            m == model or m.split(":")[0] == model_base for m in available_models
         )
 
         if not model_found:
