@@ -98,8 +98,8 @@ class TestTranslate:
 
         call_data = mock_post.call_args[1]["json"]
         assert "Hello World" in call_data["prompt"]
-        assert "Translate" in call_data["prompt"]
-        assert "Turkish" in call_data["prompt"]
+        assert "profesyonel" in call_data["prompt"]
+        assert "Türkçe" in call_data["prompt"]
 
     @patch("translator.requests.post")
     def test_api_parametreleri(self, mock_post):

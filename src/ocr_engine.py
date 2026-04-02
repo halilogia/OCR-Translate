@@ -40,7 +40,7 @@ class TextBlock:
 
 # region YAPILANDIRMA VE EŞİKLER
 _MIN_CONF_SCORE = (
-    0.15  # Manga/stylized fontlarda düşük güven normal, noise filter yakalar
+    0.40  # Tesseract için minimum güven eşiği (daha yüksek = daha az noise)
 )
 _GARBAGE_RATIO_THRESHOLD = 0.6
 _MIN_TEXT_LENGTH = 2

@@ -24,7 +24,7 @@ VISION_MODEL = "glm-ocr"  # Ollama vision modelleri (Llama 3.2-Vision vb.)
 REFINER_MODEL = "gemma:2b"  # Hızlı ve hafif model tercih edildi
 ENABLE_REFINER = False  # Performans için devre dışı (daha hızlı)
 OCR_LANG = "eng"  # Tesseract: "eng" | EasyOCR: "en"
-OCR_PSM = 6  # Tek blok metin modu (altyazılar için ideal)
+OCR_PSM = 3  # Tam otomatik sayfa segmentasyonu (çoklu metin blokları için ideal)
 # endregion
 
 # region Konuşma Balonu Tespiti (Speech Bubble Detection)

@@ -13,6 +13,7 @@ from PyQt5.QtGui import QColor, QCursor, QFont, QPainter, QPen
 from PyQt5.QtWidgets import QApplication, QWidget
 
 from screen_capture import Region, get_full_screen_region
+from i18n import _
 
 
 def _is_wayland() -> bool:
@@ -79,7 +80,7 @@ class RegionSelector(QWidget):
         painter.drawText(
             self.rect(),
             Qt.AlignTop | Qt.AlignHCenter,
-            "\n\n  Fare ile alan seçin  |  F tuşu: Tam Ekran  |  ESC: İptal",
+            "\n\n  " + _("select_area_instructions"),
         )
 
         # Seçim dikdörtgeni

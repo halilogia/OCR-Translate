@@ -206,7 +206,7 @@ class HomePanel(QWidget):
         tl = QHBoxLayout(self.target_card)
         tl.setContentsMargins(15, 8, 15, 8)
 
-        self.target_icon = QLabel("🎯")
+        self.target_icon = QLabel("\U0001f3af")
         self.target_icon.setStyleSheet(
             "font-size: 14px; background: transparent; border: none;"
         )
@@ -222,14 +222,14 @@ class HomePanel(QWidget):
         layout.addWidget(self.target_card)
 
         # Main Actions
-        self.btn_toggle = PremiumButton("▶ " + _("start_translate"), primary=True)
+        self.btn_toggle = PremiumButton("\u25b6 " + _("start_translate"), primary=True)
         layout.addWidget(self.btn_toggle)
 
-        self.btn_region = PremiumButton("🔲 " + _("select_area"))
+        self.btn_region = PremiumButton("\U0001f532 " + _("select_area"))
         layout.addWidget(self.btn_region)
 
         self.btn_window = PremiumButton(
-            "🪟 " + _("select_window"), color_name="accent_cyan"
+            "\U0001fa9f " + _("select_window"), color_name="accent_cyan"
         )
         layout.addWidget(self.btn_window)
 
@@ -454,31 +454,19 @@ class SettingsPanel(QWidget):
         sl.addWidget(self.refiner_check)
 
         # Bubble Detection Toggle
-        self.bubble_check = QCheckBox(
-            _("enable_bubble_detection")
-            if hasattr(_, "enable_bubble_detection")
-            else "Konuşma Balonu Tespiti"
-        )
+        self.bubble_check = QCheckBox(_("enable_bubble_detection"))
         self.bubble_check.setStyleSheet(
             "color: white; font-weight: bold; margin-top: 5px;"
         )
-        self.bubble_check.setToolTip(
-            "Manga/manhwa konuşma balonlarını otomatik tespit eder"
-        )
+        self.bubble_check.setToolTip(_("bubble_detection_tooltip"))
         sl.addWidget(self.bubble_check)
 
         # UI Filter Toggle
-        self.ui_filter_check = QCheckBox(
-            _("enable_ui_filter")
-            if hasattr(_, "enable_ui_filter")
-            else "UI Gürültü Filtreleme"
-        )
+        self.ui_filter_check = QCheckBox(_("enable_ui_filter"))
         self.ui_filter_check.setStyleSheet(
             "color: white; font-weight: bold; margin-top: 5px;"
         )
-        self.ui_filter_check.setToolTip(
-            "Toolbar, adres çubuğu, sidebar gibi UI elementlerini filtreler"
-        )
+        self.ui_filter_check.setToolTip(_("ui_filter_tooltip"))
         self.ui_filter_check.setChecked(True)  # Varsayılan olarak aktif
         sl.addWidget(self.ui_filter_check)
 
@@ -734,7 +722,7 @@ class MainDashboard(QMainWindow):
         self.sidebar_layout.addWidget(self.nav_shortcuts)
         self.sidebar_layout.addStretch()
 
-        self.btn_quit = QPushButton("✕")
+        self.btn_quit = QPushButton("\u2715")
         self.btn_quit.setFixedSize(30, 30)
         self.btn_quit.setCursor(Qt.PointingHandCursor)
         self.btn_quit.setStyleSheet(
@@ -840,14 +828,14 @@ class MainDashboard(QMainWindow):
     def set_running_state(self, is_running):
         self._is_running = is_running
         if is_running:
-            self.btn_toggle.setText("⏸ " + _("stop_translate"))
+            self.btn_toggle.setText("\u23f8 " + _("stop_translate"))
             self.btn_toggle.setStyleSheet(
                 self.btn_toggle.styleSheet()
                 .replace("#00e5ff", "#f44336")
                 .replace("#0078d4", "#d32f2f")
             )
         else:
-            self.btn_toggle.setText("▶ " + _("start_translate"))
+            self.btn_toggle.setText("\u25b6 " + _("start_translate"))
             self.btn_toggle._apply_style()
 
     # region Logic (Ollama, Test, Storage)
@@ -893,7 +881,7 @@ class MainDashboard(QMainWindow):
             self._set_offline_status()
 
     def _set_offline_status(self):
-        self.ollama_status.setText("OFFLINE")
+        self.ollama_status.setText(_("offline"))
         self.ollama_status.setStyleSheet(
             "color: #f44336; font-weight: 900; background: transparent; border: none;"
         )
@@ -907,7 +895,7 @@ class MainDashboard(QMainWindow):
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
-            self.ollama_status.setText("STARTING...")
+            self.ollama_status.setText(_("starting"))
             self.ollama_status.setStyleSheet(
                 "color: #FFC107; font-weight: 900; background: transparent; border: none;"
             )
@@ -999,7 +987,7 @@ class MainDashboard(QMainWindow):
         if not model:
             return
         self.btn_model_test.setEnabled(False)
-        self.btn_model_test.setText("⌛ TESTING...")
+        self.btn_model_test.setText(_("testing"))
         start_time = time.time()
 
         def run_test():
@@ -1013,11 +1001,11 @@ class MainDashboard(QMainWindow):
                 )
                 elapsed = time.time() - start_time
                 if response.status_code == 200:
-                    self.btn_model_test.setText(f"✅ SUCCESS ({elapsed:.1f}s)")
+                    self.btn_model_test.setText(f"✅ {_("success")} ({elapsed:.1f}s)")
                 else:
-                    self.btn_model_test.setText(f"❌ FAILED ({elapsed:.1f}s)")
+                    self.btn_model_test.setText(f"❌ {_("failed")} ({elapsed:.1f}s)")
             except Exception as e:
-                self.btn_model_test.setText("❌ OFFLINE")
+                self.btn_model_test.setText(f"❌ {_("offline")}")
             self.btn_model_test.setEnabled(True)
 
         QTimer.singleShot(100, run_test)

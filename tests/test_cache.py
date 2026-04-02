@@ -57,18 +57,17 @@ class TestIsNewText:
         # _last_text artik "Completely different text here now" olmali
         assert cache._last_text == "Completely different text here now"
 
-    def test_last_text_benzer_metinde_guncellenmez(self):
+    def test_last_text_benzer_metinde_guncellenir(self):
         """
-        BUG #1 TESPITI (Boiling Frog):
-        Benzer metin reddedildiginde _last_text guncellenmiyor.
-        Bu, yavas degisen metinlerin hic yakalanmamasina neden olabilir.
+        Küçük değişikliklerde _last_text güncellenir (satır 61).
+        Boiling Frog koruması _accumulated_diff üzerinden çalışır.
         """
         cache = TextCache(threshold=0.85)
         cache.is_new_text("The quick brown fox jumps over the lazy dog")
-        # Kucuk degisiklik — esik ustunde benzerlik
+        # Küçük değişiklik — eşik üstünde benzerlik
         cache.is_new_text("The quick brown fox jumps over the lazy cat")
-        # _last_text hala eski metin olmali (guncellenmedi)
-        assert cache._last_text == "The quick brown fox jumps over the lazy dog"
+        # _last_text yeni metne güncellendi (satır 61)
+        assert cache._last_text == "The quick brown fox jumps over the lazy cat"
 
 
 class TestIsNewTextEdgeCases:

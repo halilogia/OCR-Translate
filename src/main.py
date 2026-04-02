@@ -281,6 +281,9 @@ class TranslationWorker(QThread):
                     if translation:
                         self.cache.store(combined_text, translation)
                         all_translated = translation.split("\n---\n")
+                    else:
+                        logger.warning("Çeviri başarısız, orijinal metin kullanılıyor")
+                        t_translate_ms = 0
 
                 # Sonuçları bloklara geri işle
                 translated_blocks = []
@@ -332,6 +335,7 @@ class TranslationWorker(QThread):
 
             except Exception as e:
                 logger.error(f"Worker hatası: {e}")
+                self.status_msg.emit(f"Hata: {str(e)}")
 
             # Bekleme (Interval - İşlem Süresi)
             t_total_ms = (time.time() - t_total) * 1000
@@ -533,7 +537,7 @@ class OCRTranslateApp(QObject):
         else:
             self._overlay.update_region(self._region)
 
-        self._overlay.update_text("⏳ HAZIR...")
+        self._overlay.update_text("\u23f3 " + _("ready_loading"))
         self._overlay.show()
 
         # Worker Başlat
@@ -580,6 +584,7 @@ class OCRTranslateApp(QObject):
         if self._dashboard:
             self._dashboard.set_running_state(False)
             self._dashboard.show()
+        self._tracking_timer.stop()
         logger.info("Çeviri durduruldu.")
 
     def resume(self) -> None:

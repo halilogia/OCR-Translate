@@ -259,16 +259,15 @@ def _capture_region_kwin_6(uuid: str) -> np.ndarray:
         tmp_path = tmp.name
 
     try:
-        # AAA Implementation: KWin 6 ScreenShot2 (Direct)
-        # Not: CaptureWindow metodu bir dosya yolu veya handle bekler.
-        # En basit ve stabil yol spectacle üzerinden bu API'yi tetiklemektir.
         cmd = ["spectacle", "-b", "-n", "-o", tmp_path, "--window", uuid]
         result = subprocess.run(cmd, capture_output=True, timeout=10)
 
-        if result.returncode != 0:
-            # Fallback: UUID ile başarısız olursa normal pencere yakalama dene
+        if result.returncode != 0 or not os.path.exists(tmp_path):
             cmd = ["spectacle", "-b", "-n", "-o", tmp_path, "-w"]
-            subprocess.run(cmd, capture_output=True, timeout=10)
+            result = subprocess.run(cmd, capture_output=True, timeout=10)
+
+        if result.returncode != 0 or not os.path.exists(tmp_path):
+            raise RuntimeError(f"KDE window capture failed: {result.stderr.decode()}")
 
         img = Image.open(tmp_path).convert("RGB")
         return np.array(img)
@@ -373,21 +372,21 @@ def capture_region(
                 f"Aura (Pipewire) yakalama başarısız, standart yönteme dönülüyor: {e}"
             )
 
-    # 2. Qt Native - En hızlı yöntem (Wayland/X11)
-    if method == "auto" or method == "qt":
-        try:
-            return _capture_region_qt(region)
-        except Exception as e:
-            logger.debug(f"Qt capture başarısız: {e}")
-
-    # 3. KDE 6 ScreenShot2 Önceliği (Pencere bazlı)
+    # 2. KDE 6 ScreenShot2 - Pencere bazlı yakalama (UUID varsa öncelikli)
     if (method == "auto" or method == "kde") and uuid:
         try:
             return _capture_region_kwin_6(uuid)
         except Exception as e:
             logger.warning(
-                f"KDE 6 (ScreenShot2) yakalama başarısız, standart yönteme dönülüyor: {e}"
+                f"KDE 6 (ScreenShot2) yakalama başarısız, koordinat bazlı yönteme dönülüyor: {e}"
             )
+
+    # 3. Qt Native - Koordinat bazlı (Wayland/X11)
+    if method == "auto" or method == "qt":
+        try:
+            return _capture_region_qt(region)
+        except Exception as e:
+            logger.debug(f"Qt capture başarısız: {e}")
 
     # 4. Önceden çalışan bir backend varsa onu kullan
     if _WORKING_BACKEND:

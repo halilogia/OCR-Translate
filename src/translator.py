@@ -75,6 +75,8 @@ def translate(text: str, model: str = OLLAMA_MODEL, retries: int = 2) -> str | N
                 retries,
                 OLLAMA_URL,
             )
+            if attempt < retries:
+                continue
             break
         except requests.exceptions.Timeout as exc:
             last_exc = exc

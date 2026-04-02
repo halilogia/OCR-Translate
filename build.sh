@@ -64,7 +64,6 @@ pyinstaller \
     --hidden-import requests \
     --exclude-module tkinter \
     --exclude-module matplotlib \
-    --exclude-module scipy \
     --exclude-module pandas \
     src/main.py
 
