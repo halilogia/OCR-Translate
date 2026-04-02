@@ -5,23 +5,113 @@ Ollama API üzerinden yerel LLM ile İngilizce→Türkçe çeviri.
 
 import json
 import logging
-
 import requests
-
-from config import OLLAMA_MODEL, OLLAMA_TIMEOUT, OLLAMA_URL, TRANSLATION_PROMPT
+from config import OLLAMA_MODEL, OLLAMA_TIMEOUT, OLLAMA_URL, TRANSLATION_PROMPT, LANG
+import time
 
 logger = logging.getLogger(__name__)
 
+try:
+    from deep_translator import GoogleTranslator
 
-def translate(text: str, model: str = OLLAMA_MODEL, retries: int = 2) -> str | None:
-    """
-    Verilen İngilizce metni Ollama API ile Türkçe'ye çevirir.
-    Başarısız olursa None döner. Retry mekanizması içerir.
-    """
-    cleaned = text.strip()
-    if not cleaned:
+    HAS_GOOGLE_TRANS = True
+except Exception:
+    GoogleTranslator = None
+    HAS_GOOGLE_TRANS = False
+
+
+# region TRANSLATOR REGISTRY
+class BaseTranslator:
+    def translate(self, text: str, **kwargs) -> str | None:
+        raise NotImplementedError
+
+
+class OllamaTranslator(BaseTranslator):
+    def __init__(self, model: str = OLLAMA_MODEL):
+        self.model = model
+
+    def translate(self, text: str, **kwargs) -> str | None:
+        cleaned = text.strip()
+        if not cleaned:
+            return None
+
+        prompt = TRANSLATION_PROMPT.replace("{text}", cleaned)
+        payload = {
+            "model": self.model,
+            "prompt": prompt,
+            "stream": False,
+            "options": {"temperature": 0.3, "num_predict": 512},
+        }
+        try:
+            response = requests.post(OLLAMA_URL, json=payload, timeout=OLLAMA_TIMEOUT)
+            response.raise_for_status()
+            result = response.json().get("response", "").strip()
+            if result and not _is_prompt_leak(result):
+                return result
+        except Exception as e:
+            logger.error(f"Ollama error: {e}")
         return None
 
+
+class GoogleTranslatorBackend(BaseTranslator):
+    def translate(self, text: str, **kwargs) -> str | None:
+        if not HAS_GOOGLE_TRANS:
+            return None
+        try:
+            return GoogleTranslator(source="en", target="tr").translate(text)
+        except Exception as e:
+            logger.error(f"Google error: {e}")
+            return None
+
+
+class TranslatorFactory:
+    _instances = {}
+
+    @classmethod
+    def get_translator(cls, engine_type: str, model: str = OLLAMA_MODEL):
+        key = f"{engine_type}_{model}"
+        if key not in cls._instances:
+            if engine_type == "google":
+                cls._instances[key] = GoogleTranslatorBackend()
+            else:
+                cls._instances[key] = OllamaTranslator(model)
+        return cls._instances[key]
+
+
+# endregion
+
+
+def translate(text: str, model: str = OLLAMA_MODEL, retries: int = 2) -> str | None:
+    engine_type = "google" if model == "google" else "ollama"
+    translator = TranslatorFactory.get_translator(engine_type, model)
+
+    for attempt in range(retries + 1):
+        result = translator.translate(text)
+        if result:
+            return result
+        if attempt < retries:
+            time.sleep(0.5)
+    return None
+
+    # Google Translate Mantığı
+    if model == "google":
+        if not HAS_GOOGLE_TRANS:
+            logger.error("Google Translate (deep-translator) kütüphanesi yüklü değil!")
+            return None
+        try:
+            # deep-translator kütüphanesi ile Google üzerinden çeviri
+            result = GoogleTranslator(source="en", target="tr").translate(cleaned)
+            if result:
+                logger.info(
+                    "Google Çeviri başarılı: '%s' -> '%s'", cleaned[:50], result[:50]
+                )
+                return result
+            return None
+        except Exception as e:
+            logger.error("Google Çeviri hatası: %s", e)
+            return None
+
+    # Ollama LLM Mantığı (Mevcut kod)
     prompt = TRANSLATION_PROMPT.replace("{text}", cleaned)
     payload = {
         "model": model,

@@ -42,11 +42,13 @@ UI_SIDE_MARGIN = 0.08  # Yan kenarların %8'i UI kabul edilir (sidebar)
 
 # region Overlay Tasarımı (AAA Standards)
 OVERLAY_MODE = "inplace"  # "bottom" (Altta) veya "inplace" (Metin üzerine)
+SHOW_SOURCE_TEXT = True  # Orijinal metni göster
 # endregion
 
 # region Ekran Yakalama Ayarları
+CAPTURE_METHOD = "auto"  # "auto", "aura", "kde", "qt", "spectacle", "grim", "x11"
 CAPTURE_INTERVAL_MS = (
-    1000  # milisaniye (saniyede 1 yakalama - performans için artırıldı)
+    500  # milisaniye (Daha akıcı bir deneyim için 1000'den 500'e çekildi)
 )
 CONSOLE_LOG_FILE = "console.log"  # AAA Debugging
 # endregion

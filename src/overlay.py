@@ -1,10 +1,12 @@
 """
-OCR-TRANSLATE — Şeffaf Overlay Penceresi
-AAA Standartlarında, sinematik altyazı deneyimi.
+OCR-TRANSLATE — Şeffaf Overlay Penceresi (Sovereign & UIBS Hybrid)
+MORT ve Universal Info Tool mantığıyla çalışan,
+tespit edilen metnin tam üzerine (veya yanına) yerleşen premium kartlar.
 """
 
 import os
-from PyQt5.QtCore import Qt, QRectF
+import config
+from PyQt5.QtCore import Qt, QRectF, QPoint
 from PyQt5.QtGui import (
     QColor,
     QFont,
@@ -12,288 +14,224 @@ from PyQt5.QtGui import (
     QPainter,
     QPainterPath,
     QPen,
-    QLinearGradient,
 )
-from PyQt5.QtWidgets import QWidget, QApplication
+from PyQt5.QtWidgets import (
+    QWidget,
+    QApplication,
+    QVBoxLayout,
+    QLabel,
+    QFrame,
+    QGraphicsDropShadowEffect,
+)
 
-import config
+
+class TranslationBlockCard(QWidget):
+    """
+    Universal Info Box Mantığında Çalışan Bağımsız Kart.
+    Neden Bağımsız? -> Wayland'de 'Always on Top' garantisi ve Focus yönetimi için.
+    """
+
+    def __init__(
+        self, parent, text: str, src_text: str, rect: QRectF, bg_color: tuple
+    ) -> None:
+        super().__init__(parent)
+        self.text = text
+        self.src_text = src_text
+        self._bg_tuple = bg_color
+        self._is_dragging = False
+        self._drag_start_pos = QPoint()
+
+        # UIBS STANDARTLARI: Her zaman en üstte, fokus almaz, görev çubuğunda görünmez.
+        self.setWindowFlags(
+            Qt.ToolTip
+            | Qt.FramelessWindowHint
+            | Qt.WindowStaysOnTopHint
+            | Qt.WindowTransparentForInput  # Tıklamayı alt pencereye (tarayıcıya) geçirir
+        )
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_ShowWithoutActivating)
+        self.setFocusPolicy(Qt.NoFocus)
+
+        self._setup_ui(rect)
+
+    def _setup_ui(self, rect: QRectF) -> None:
+        # Konumlandırma: OCR bloğunun tam üzerine (veya çok az üstüne)
+        self.setGeometry(
+            int(rect.x()), int(rect.y()), int(rect.width()), int(rect.height())
+        )
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(2)
+
+        self.container = QFrame()
+        r, g, b = self._bg_tuple[:3]
+        luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b
+        text_color = "#FFFFFF" if luminance < 128 else "#000000"
+        src_color = "rgba(255,255,255,140)" if luminance < 128 else "rgba(0,0,0,140)"
+
+        # Premium Styling (UIBS Style)
+        bg_css = f"rgba({r}, {g}, {b}, 245)"
+        self.container.setStyleSheet(f"""
+            QFrame {{
+                background-color: {bg_css};
+                border-radius: 8px;
+                border: 1px solid rgba(255, 255, 255, 0.15);
+            }}
+        """)
+
+        c_layout = QVBoxLayout(self.container)
+        c_layout.setContentsMargins(8, 6, 8, 6)
+        c_layout.setSpacing(2)
+
+        # 1. Kaynak Metin (Küçük ve şeffaf)
+        if config.SHOW_SOURCE_TEXT and self.src_text:
+            src_lbl = QLabel(self.src_text)
+            src_lbl.setWordWrap(True)
+            src_lbl.setAlignment(Qt.AlignCenter)
+            src_lbl.setStyleSheet(
+                f"color: {src_color}; font-size: 9px; font-weight: 400; background: transparent; border: none;"
+            )
+            c_layout.addWidget(src_lbl)
+
+        # 2. Çeviri Metni
+        self.label = QLabel(self.text)
+        self.label.setWordWrap(True)
+        self.label.setAlignment(Qt.AlignCenter)
+
+        # Font Fitting
+        font = self._get_fitted_font(self.text, rect)
+        self.label.setFont(font)
+        self.label.setStyleSheet(
+            f"color: {text_color}; background: transparent; border: none;"
+        )
+        c_layout.addWidget(self.label)
+
+        layout.addWidget(self.container)
+
+        # Shadow (UIBS Premium Look)
+        if rect.width() > 30:
+            shadow = QGraphicsDropShadowEffect(self)
+            shadow.setBlurRadius(15)
+            shadow.setColor(QColor(0, 0, 0, 180))
+            shadow.setOffset(0, 3)
+            try:
+                self.container.setGraphicsEffect(shadow)
+            except Exception:
+                pass
+
+    # region Movement Logic
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._is_dragging = True
+            self._drag_start_pos = event.globalPos() - self.frameGeometry().topLeft()
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        if self._is_dragging and event.buttons() & Qt.LeftButton:
+            self.move(event.globalPos() - self._drag_start_pos)
+            event.accept()
+
+    def mouseReleaseEvent(self, event):
+        self._is_dragging = False
+        event.accept()
+
+    # endregion
+
+    def _get_fitted_font(self, text: str, rect: QRectF) -> QFont:
+        base_size = config.OVERLAY_FONT_SIZE
+        max_w = rect.width() - 16
+        max_h = rect.height() - 12
+        if max_w <= 0 or max_h <= 0:
+            return QFont(config.OVERLAY_FONT_FAMILY, 8)
+
+        best_size = 8
+        low, high = 8, base_size
+        while low <= high:
+            mid = (low + high) // 2
+            f = QFont(config.OVERLAY_FONT_FAMILY, mid, QFont.Bold)
+            metrics = QFontMetrics(f)
+            text_rect = metrics.boundingRect(
+                0, 0, int(max_w), 1000, Qt.AlignCenter | Qt.TextWordWrap, text
+            )
+            if text_rect.height() <= max_h:
+                best_size = mid
+                low = mid + 1
+            else:
+                high = mid - 1
+        return QFont(config.OVERLAY_FONT_FAMILY, best_size, QFont.Bold)
 
 
 class TranslationOverlay(QWidget):
     """
-    Şeffaf, elit görünümlü glassmorphism overlay penceresi.
+    Ana Pencere (Manager).
+    Wayland kuralı: Parent window 'visible' ama 'transient' olmalı.
     """
 
     def __init__(self, region) -> None:
         super().__init__()
         self._region = region
         self._text = ""
-        self._blocks = []  # List[dict[text, box, bg]]
-        self._setup_window()
-        self._update_geometry()
+        self._block_widgets = []
 
-    def _setup_window(self) -> None:
-        # Wayland/X11 uyumluluğu
-        is_wayland = "wayland" in os.environ.get("XDG_SESSION_TYPE", "").lower()
-
-        # Temel bayraklar - WindowTransparentForInput Wayland'da mouse passthrough için kritik
-        flags = (
-            Qt.FramelessWindowHint
-            | Qt.WindowStaysOnTopHint
-            | Qt.WindowTransparentForInput
+        # Manager Ayarları: Görünmez ama aktif
+        self.setWindowFlags(
+            Qt.Window | Qt.FramelessWindowHint | Qt.WindowTransparentForInput
         )
-
-        if is_wayland:
-            # Wayland: Tool penceresi
-            flags |= Qt.Tool
-        else:
-            # X11: Klasik bypass
-            flags |= Qt.Tool | Qt.X11BypassWindowManagerHint
-
-        self.setWindowFlags(flags)
-
-        # Şeffaflık attribute'ları
-        self.setAttribute(Qt.WA_TranslucentBackground, True)
-        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        self.setAttribute(Qt.WA_ShowWithoutActivating, True)
-        self.setAttribute(Qt.WA_NoSystemBackground, True)
-
-        # Input region'ı boş yap - tüm input'lar altındaki pencereye geçsin
-        if is_wayland:
-            # KDE Wayland için ek input passthrough
-            self.setWindowOpacity(1.0)
-            # Mask'ı boş yap - hiçbir piksel input almaz
-            from PyQt5.QtGui import QRegion
-
-            self.setMask(QRegion())  # Boş region = tüm input pass-through
-
-        print(f"[OVERLAY] Setup: Wayland={is_wayland}, InputPassthrough=True")
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setWindowOpacity(0.01)
+        self.setGeometry(0, 0, 1, 1)  # UIBS Style: 0,0'da minik parent
+        self.show()
 
     def update_text(self, text: str) -> None:
-        if config.OVERLAY_MODE == "inplace":
-            return  # In-place modunda block sinyalini beklerizer
-        self._text = text.strip()
-        self._blocks = []
-        if self._text:
-            self._update_geometry()
-            if not self.isVisible():
-                self.show()
-        else:
-            self.hide()
-        self.update()
+        """Dashboard'dan/Klavye'den gelen tekil mesajları (Loading vb.) yönetir."""
+        # TODO: Alttaki sinematik barı hâlâ kullanmak isteyebiliriz, şimdilik sessiz.
+        pass
 
     def update_blocks(self, blocks: list) -> None:
-        """MORT-Style: Koordinatlı blokları günceller.
+        """OCR tarafından tespit edilen tüm blokları bağımsız kartlar olarak render eder."""
+        # Temizlik
+        for w in self._block_widgets:
+            w.hide()
+            w.deleteLater()
+        self._block_widgets.clear()
 
-        Blok koordinatları yakalanan görüntüye görelidir.
-        Overlay seçili bölgenin üzerinde konumlandırılır ve koordinatlar
-        region offset ile düzeltilir.
-        """
         if config.OVERLAY_MODE != "inplace":
             return
 
-        # Blok koordinatlarını region offset ile düzelt
-        adjusted_blocks = []
         for b in blocks:
-            bx = b["box"]  # [x, y, w, h] - görüntüye göreli
-            adjusted_blocks.append(
-                {
-                    "text": b["text"],
-                    "box": [
-                        bx[0] + self._region["left"],  # x + region.left
-                        bx[1] + self._region["top"],  # y + region.top
-                        bx[2],  # width aynı kalır
-                        bx[3],  # height aynı kalır
-                    ],
-                    "bg": b.get("bg", (0, 0, 0)),
-                }
+            bx = b["box"]
+            # Koordinatları Bölgeye (Region) Göre Hesapla
+            # bx: [x, y, w, h] - region: {left, top, width, height}
+
+            # ÖNEMLİ: Eğer capture tüm ekran (spectacle) üzerinden yapılıyorsa
+            # ve biz bu görüntüyü kırpıp OCR'a sokuyorsak, bx zaten yereldir.
+            # Ama capture_region fonksiyonu bazen tüm ekranı döndürüp içinden
+            # sadece ilgili kısmı kırpıp worker'a veriyor.
+
+            # Eğer bx koordinatları zaten global ise (ekran geneli), region eklemeye gerek yok.
+            # Ancak worker.py'de image = capture_region(...) dönen görüntü 'kırpılmış' haldedir.
+            # Dolayısıyla bx, bu kırpılmış görüntüye göre yereldir [0,0] sol üst kabul eder.
+
+            rect = QRectF(
+                float(bx[0]) + float(self._region["left"]),
+                float(bx[1]) + float(self._region["top"]),
+                float(bx[2]),
+                float(bx[3]),
+            ).adjusted(-4, -4, 4, 4)  # Biraz ferahlık payı
+
+            # Kartı Oluştur (Parent None yaparak gerçek bağımsız pencere yapalım)
+            card = TranslationBlockCard(
+                None, b["text"], b.get("src_text", ""), rect, b.get("bg", (0, 0, 0))
             )
+            card.show()
+            card.raise_()  # En öne getir
+            self._block_widgets.append(card)
 
-        self._blocks = adjusted_blocks
-        if self._blocks:
-            # Tüm ekranı kapsayacak şekilde genişle (Bloklar bu alanın içindedir)
-            screen = QApplication.primaryScreen()
-            if screen:
-                geom = screen.geometry()
-                self.setGeometry(0, 0, geom.width(), geom.height())
-            else:
-                self.setGeometry(
-                    0,
-                    0,
-                    self._region["left"] + self._region["width"],
-                    self._region["top"] + self._region["height"],
-                )
-            if not self.isVisible():
-                self.show()
-        else:
-            self.hide()
-        self.update()
-
-    def _update_geometry(self) -> None:
-        font = self._get_font()
-        metrics = QFontMetrics(font)
-
-        # Maksimum genişlik seçili alan veya min 400px
-        max_w = max(self._region["width"], 400)
-        padding = config.OVERLAY_PADDING
-
-        # Metin alanı hesabı
-        rect = metrics.boundingRect(
-            0, 0, max_w - 2 * padding, 1000, Qt.AlignLeft | Qt.TextWordWrap, self._text
-        )
-
-        if config.OVERLAY_MODE == "inplace":
-            # Orijinal metnin tam üzerine (MORT Style)
-            x = self._region["left"]
-            y = self._region["top"]
-            w = self._region["width"]
-            h = self._region["height"]
-        else:
-            # Seçili alanın altına (Sinematik mod)
-            w = min(rect.width() + 2 * padding + 20, max_w)
-            h = rect.height() + 2 * padding + 10
-            x = self._region["left"] + (self._region["width"] - w) // 2
-            y = self._region["top"] + self._region["height"] + config.OVERLAY_MARGIN_TOP
-
-        self.setGeometry(int(x), int(y), int(w), int(h))
-
-    def paintEvent(self, a0) -> None:
-        if not self._text and not self._blocks:
-            return
-
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
-        p.setRenderHint(QPainter.TextAntialiasing)
-
-        # 1. MORT-Style Multi-block Rendering
-        if self._blocks:
-            for idx, b in enumerate(self._blocks):
-                txt = b["text"]
-                bx = b["box"]  # [x, y, w, h] (Region offset'i uygulanmış)
-                bg = b.get("bg", (0, 0, 0))
-
-                # Koordinatları overlay penceresine uyarla
-                rect = QRectF(bx[0], bx[1], bx[2], bx[3]).adjusted(-5, -2, 5, 2)
-
-                # Arka Plan Maskeleme (Natural Masking) - Orijinal metni tamamen kapat
-                p.setBrush(QColor(*bg, 245))
-                p.setPen(Qt.NoPen)
-                p.drawRoundedRect(rect, 4, 4)
-
-                # Dinamik font boyutu: Blok boyutuna ve metin uzunluğuna göre ayarla
-                font = self._get_fitted_font(txt, rect)
-                p.setFont(font)
-
-                # Metin Çizimi (Outline + Fill) - Otomatik kontrast
-                self._draw_outlined_text(p, rect, txt, font, bg_color=bg)
-
-        # 2. Klasik Tek Blok Rendering (Legacy/Cinema Mode)
-        elif self._text:
-            font = self._get_font()
-            p.setFont(font)
-
-            bg_color = QColor(config.OVERLAY_BG_COLOR)
-            path = QPainterPath()
-            path.addRoundedRect(QRectF(self.rect()), 15, 15)
-            p.fillPath(path, bg_color)
-
-            padding = config.OVERLAY_PADDING
-            rect = self.rect().adjusted(padding, padding, -padding, -padding)
-
-            self._draw_outlined_text(p, QRectF(rect), self._text, font)
-
-        p.end()
-
-    def _get_fitted_font(self, text: str, rect: QRectF) -> QFont:
-        """Metni verilen dikdörtgen içine sığdıracak font boyutunu hesaplar."""
-        base_size = config.OVERLAY_FONT_SIZE
-        min_size = max(8, base_size // 3)  # Minimum okunabilir boyut
-        max_w = rect.width() - 6  # padding
-        max_h = rect.height() - 4
-
-        if max_w <= 0 or max_h <= 0:
-            return self._get_font()
-
-        # Binary search ile optimum font boyutu bul
-        best_size = min_size
-        for size in range(base_size, min_size - 1, -1):
-            f = QFont(config.OVERLAY_FONT_FAMILY, size)
-            f.setBold(True)
-            f.setLetterSpacing(QFont.PercentageSpacing, 105)
-            metrics = QFontMetrics(f)
-            text_rect = metrics.boundingRect(
-                0, 0, int(max_w), int(max_h), Qt.AlignCenter | Qt.TextWordWrap, text
-            )
-            if text_rect.width() <= max_w and text_rect.height() <= max_h:
-                best_size = size
-                break
-
-        f = QFont(config.OVERLAY_FONT_FAMILY, best_size)
-        f.setBold(True)
-        f.setLetterSpacing(QFont.PercentageSpacing, 105)
-        return f
-
-    def _get_contrast_colors(self, bg_color: tuple) -> tuple:
-        """Arka plan rengine göre kontrast metin ve outline rengi hesaplar.
-
-        Returns:
-            (text_color, outline_color) - QColor tuple
-        """
-        r, g, b = bg_color[:3]
-        # Luminance hesabı (ITU-R BT.709)
-        luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b
-
-        if luminance > 128:
-            # Açık arka plan -> Koyu metin
-            return (QColor(0, 0, 0), QColor(255, 255, 255))
-        else:
-            # Koyu arka plan -> Açık metin
-            return (QColor(255, 255, 255), QColor(0, 0, 0))
-
-    def _draw_outlined_text(
-        self, p: QPainter, rect: QRectF, text: str, font: QFont, bg_color: tuple = None
-    ) -> None:
-        """Outline efektli metin çizer (offset ile).
-
-        Args:
-            bg_color: Arka plan rengi (r, g, b) - otomatik kontrast için
-        """
-        p.setFont(font)
-        off = max(1, font.pointSize() // 12)  # Font boyutuna göre outline kalınlığı
-
-        # Kontrast renkleri hesapla
-        if bg_color:
-            text_color, outline_color = self._get_contrast_colors(bg_color)
-        else:
-            text_color = QColor(config.OVERLAY_FONT_COLOR)
-            outline_color = QColor(config.OVERLAY_OUTLINE_COLOR)
-
-        # Outline (4 yöne offset ile)
-        p.setPen(outline_color)
-        for dx, dy in [(-off, 0), (off, 0), (0, -off), (0, off)]:
-            p.drawText(rect.translated(dx, dy), Qt.AlignCenter | Qt.TextWordWrap, text)
-
-        # Köşe offset'leri (daha belirgin outline için)
-        corner_off = max(1, off - 1)
-        for dx, dy in [
-            (-corner_off, -corner_off),
-            (corner_off, -corner_off),
-            (-corner_off, corner_off),
-            (corner_off, corner_off),
-        ]:
-            p.drawText(rect.translated(dx, dy), Qt.AlignCenter | Qt.TextWordWrap, text)
-
-        # Ana metin
-        p.setPen(text_color)
-        p.drawText(rect, Qt.AlignCenter | Qt.TextWordWrap, text)
-
-    def _get_font(self) -> QFont:
-        f = QFont(config.OVERLAY_FONT_FAMILY, config.OVERLAY_FONT_SIZE)
-        f.setBold(True)
-        f.setLetterSpacing(QFont.PercentageSpacing, 105)
-        return f
-
-    def update_region(self, region) -> None:
+    def update_region(self, region):
         self._region = region
-        self._update_geometry()
-        self.update()
+
+    def closeEvent(self, event):
+        for w in self._block_widgets:
+            w.close()
+        super().closeEvent(event)

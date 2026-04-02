@@ -16,6 +16,7 @@ DEFAULT_SETTINGS = {
     "vision_model": "glm-ocr",
     "capture_method": "auto",
     "enable_refiner": False,  # Performans için devre dışı
+    "show_source_text": True,
 }
 
 

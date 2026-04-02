@@ -7,6 +7,7 @@ requests>=2.31
 opencv-python-headless>=4.8
 torch>=2.0.0
 easyocr>=1.7.1
+qtawesome>=1.2.0
 
 # Opsiyonel OCR Motorları (daha iyi sonuç için önerilir)
 # manga-ocr  # Japonca manga için: pip install manga-ocr

@@ -11,7 +11,8 @@ import os
 import shutil
 import subprocess
 import tempfile
-from typing import TypedDict
+import time
+from typing import TypedDict, Optional
 
 import cv2
 import mss
@@ -48,7 +49,7 @@ def _capture_region_qt(region: Region) -> np.ndarray:
     try:
         from PyQt5.QtWidgets import QApplication
         from PyQt5.QtCore import QRect
-        from PyQt5.QtGui import QScreen
+        from PyQt5.QtGui import QScreen, QPixmap
 
         app = QApplication.instance()
         if not app:
@@ -58,38 +59,42 @@ def _capture_region_qt(region: Region) -> np.ndarray:
         if not screen:
             raise RuntimeError("Ekran bulunamadı")
 
-        # Wayland'da grabWindow region crop yapamaz, tüm ekranı alıp crop yap
-        rect = QRect(0, 0, screen.geometry().width(), screen.geometry().height())
-        pixmap = screen.grabWindow(0, rect.x(), rect.y(), rect.width(), rect.height())
+        # ÖNEMLİ: Bazı sistemlerde screen.grabWindow(0) çalışmayabilir (Wayland)
+        # Ama QApplication.primaryScreen().grabWindow(0) KDE'de genelde çalışır.
+        # Eğer boş dönüyorsa alternatif: QPixmap.grabWindow(0) - deprecated ama fallback
+
+        # Koordinatlar
+        x, y, w, h = region["left"], region["top"], region["width"], region["height"]
+
+        # Sınır kontrolü (Gerekli çünkü pencere koordinatları ekran dışına taşabilir)
+        screen_geom = screen.geometry()
+        x = max(0, x)
+        y = max(0, y)
+        w = min(w, screen_geom.width() - x)
+        h = min(h, screen_geom.height() - y)
+
+        if w <= 0 or h <= 0:
+            return np.zeros((10, 10, 3), dtype=np.uint8)
+
+        pixmap = screen.grabWindow(0, x, y, w, h)
 
         if pixmap.isNull():
-            raise RuntimeError("Pixmap boş")
+            # Son çare: Tüm ekranı alıp kırp (daha yavaş ama garantici)
+            pixmap = screen.grabWindow(0)
+            if pixmap.isNull():
+                raise RuntimeError("Pixmap hala boş")
+            pixmap = pixmap.copy(x, y, w, h)
 
-        qimage = pixmap.toImage().convertToFormat(5)
+        qimage = pixmap.toImage().convertToFormat(5)  # Format_RGB888
         width = qimage.width()
         height = qimage.height()
         ptr = qimage.bits()
         ptr.setsize(height * width * 3)
         arr = np.frombuffer(ptr, np.uint8).reshape((height, width, 3)).copy()
 
-        # Region crop manuel olarak yap
-        x, y, w, h = region["left"], region["top"], region["width"], region["height"]
-        x = max(0, min(x, width - 1))
-        y = max(0, min(y, height - 1))
-        w = min(w, width - x)
-        h = min(h, height - y)
-
-        if w <= 0 or h <= 0:
-            raise RuntimeError(f"Geçersiz region: x={x} y={y} w={w} h={h}")
-
-        cropped = arr[y : y + h, x : x + w]
-
-        if cropped.size == 0:
-            raise RuntimeError("Crop sonrası boş görüntü")
-
-        return cropped
+        return arr
     except Exception as e:
-        logger.warning(f"Qt capture başarısız: {e}")
+        logger.debug(f"Qt capture başarısız: {e}")
         raise
 
 
@@ -105,6 +110,7 @@ def _capture_full_spectacle() -> np.ndarray:
         tmp_path = tmp.name
 
     try:
+        # -b: background, -n: non-interactive, -f: fullscreen, -o: output
         result = subprocess.run(
             ["spectacle", "-b", "-n", "-f", "-o", tmp_path],
             capture_output=True,
@@ -114,11 +120,22 @@ def _capture_full_spectacle() -> np.ndarray:
             error_msg = result.stderr.decode().strip()
             raise RuntimeError(f"spectacle hatası: {error_msg}")
 
+        # Dosyanın yazıldığından emin ol (yarım yazılma riskine karşı)
+        for _ in range(5):
+            if os.path.exists(tmp_path) and os.path.getsize(tmp_path) > 0:
+                break
+            time.sleep(0.1)
+
         img = Image.open(tmp_path).convert("RGB")
+        # numpy array'e çevirip belleğe alalım ki dosya silinse de sorun olmasın
         return np.array(img)
+    except Exception as e:
+        logger.error(f"Spectacle okuma hatası: {e}")
+        raise
     finally:
         try:
-            os.unlink(tmp_path)
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
         except OSError:
             pass
 
@@ -393,6 +410,13 @@ def capture_region(
         except Exception as e:
             logger.debug(f"Qt capture başarısız: {e}")
 
+    # 2b. Auto modda x11 yolu hızlı bir fallback olarak denensin
+    if method == "auto":
+        try:
+            return _capture_region_x11(region)
+        except Exception as e:
+            logger.debug(f"X11 capture başarısız: {e}")
+
     # 3. Önceden çalışan bir backend varsa onu kullan
     if _WORKING_BACKEND:
         try:
@@ -432,9 +456,17 @@ def capture_full_screen() -> np.ndarray:
     """Tüm ekranın görüntüsünü numpy array (RGB) olarak döner."""
     backend = _get_backend()
     if backend == "grim":
-        return _capture_full_grim()
+        try:
+            return _capture_full_grim()
+        except Exception as e:
+            logger.warning(f"grim tam ekran capture başarısız, x11'e düşülüyor: {e}")
     if backend == "spectacle":
-        return _capture_full_spectacle()
+        try:
+            return _capture_full_spectacle()
+        except Exception as e:
+            logger.warning(
+                f"spectacle tam ekran capture başarısız, x11'e düşülüyor: {e}"
+            )
     return _capture_full_screen_x11()
 
 

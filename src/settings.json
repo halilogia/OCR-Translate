@@ -1,8 +1,8 @@
 {
     "model": "translategemma:latest",
-    "interval": 1000,
-    "ocr_engine_type": "easyocr",
-    "overlay_mode": "inplace",
+    "interval": 100,
+    "ocr_engine_type": "Otomatik (Auto)",
+    "overlay_mode": "bottom",
     "vision_model": "glm-ocr:latest",
     "capture_method": "auto",
     "enable_refiner": true

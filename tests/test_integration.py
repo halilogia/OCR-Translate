@@ -16,7 +16,7 @@ import pytest
 from unittest.mock import patch, MagicMock
 
 from cache import TextCache
-from ocr_engine import preprocess_image, extract_text
+from ocr_engine import extract_text
 from translator import translate
 
 
