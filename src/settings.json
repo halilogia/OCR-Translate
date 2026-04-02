@@ -1,9 +1,9 @@
 {
-    "model": "gemma3:4b",
+    "model": "translategemma:latest",
     "interval": 1000,
-    "ocr_engine_type": "tesseract",
+    "ocr_engine_type": "easyocr",
     "overlay_mode": "inplace",
     "vision_model": "glm-ocr:latest",
     "capture_method": "auto",
-    "enable_refiner": false
+    "enable_refiner": true
 }

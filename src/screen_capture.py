@@ -58,22 +58,36 @@ def _capture_region_qt(region: Region) -> np.ndarray:
         if not screen:
             raise RuntimeError("Ekran bulunamadı")
 
-        # Bölgeyi yakala
-        rect = QRect(region["left"], region["top"], region["width"], region["height"])
+        # Wayland'da grabWindow region crop yapamaz, tüm ekranı alıp crop yap
+        rect = QRect(0, 0, screen.geometry().width(), screen.geometry().height())
         pixmap = screen.grabWindow(0, rect.x(), rect.y(), rect.width(), rect.height())
 
         if pixmap.isNull():
             raise RuntimeError("Pixmap boş")
 
-        # QPixmap -> numpy array
-        qimage = pixmap.toImage().convertToFormat(5)  # Format_RGB888
+        qimage = pixmap.toImage().convertToFormat(5)
         width = qimage.width()
         height = qimage.height()
         ptr = qimage.bits()
         ptr.setsize(height * width * 3)
-        arr = np.frombuffer(ptr, np.uint8).reshape((height, width, 3))
+        arr = np.frombuffer(ptr, np.uint8).reshape((height, width, 3)).copy()
 
-        return arr.copy()  # Copy gerekli çünkü QImage silinebilir
+        # Region crop manuel olarak yap
+        x, y, w, h = region["left"], region["top"], region["width"], region["height"]
+        x = max(0, min(x, width - 1))
+        y = max(0, min(y, height - 1))
+        w = min(w, width - x)
+        h = min(h, height - y)
+
+        if w <= 0 or h <= 0:
+            raise RuntimeError(f"Geçersiz region: x={x} y={y} w={w} h={h}")
+
+        cropped = arr[y : y + h, x : x + w]
+
+        if cropped.size == 0:
+            raise RuntimeError("Crop sonrası boş görüntü")
+
+        return cropped
     except Exception as e:
         logger.warning(f"Qt capture başarısız: {e}")
         raise
@@ -372,23 +386,14 @@ def capture_region(
                 f"Aura (Pipewire) yakalama başarısız, standart yönteme dönülüyor: {e}"
             )
 
-    # 2. KDE 6 ScreenShot2 - Pencere bazlı yakalama (UUID varsa öncelikli)
-    if (method == "auto" or method == "kde") and uuid:
-        try:
-            return _capture_region_kwin_6(uuid)
-        except Exception as e:
-            logger.warning(
-                f"KDE 6 (ScreenShot2) yakalama başarısız, koordinat bazlı yönteme dönülüyor: {e}"
-            )
-
-    # 3. Qt Native - Koordinat bazlı (Wayland/X11)
+    # 2. Koordinat bazlı capture (window tracking dahil - region her frame güncellenir)
     if method == "auto" or method == "qt":
         try:
             return _capture_region_qt(region)
         except Exception as e:
             logger.debug(f"Qt capture başarısız: {e}")
 
-    # 4. Önceden çalışan bir backend varsa onu kullan
+    # 3. Önceden çalışan bir backend varsa onu kullan
     if _WORKING_BACKEND:
         try:
             if _WORKING_BACKEND == "grim":
@@ -402,7 +407,7 @@ def capture_region(
             )
             _WORKING_BACKEND = ""
 
-    # 5. Backend bul ve dene
+    # 4. Backend bul ve dene
     backend = _get_backend()
     try:
         if backend == "grim":

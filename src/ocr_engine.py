@@ -13,8 +13,6 @@ from typing import List, Optional, Dict, Tuple
 import cv2
 import numpy as np
 import pytesseract
-import torch
-import easyocr
 
 import config
 from config import OCR_LANG, OCR_PSM, OCR_ENGINE_TYPE
@@ -24,6 +22,12 @@ logger = logging.getLogger(__name__)
 # Lazy imports for optional dependencies
 _manga_ocr_instance = None
 _paddle_ocr_instance = None
+_torch_loaded = False
+_easyocr_loaded = False
+_torch_loaded = False
+_easyocr_loaded = False
+_torch_loaded = False
+_easyocr_loaded = False
 
 
 # region VERİ YAPILARI
@@ -70,7 +74,17 @@ class EasyOCREngine(OCREngine):
 
     def __init__(self) -> None:
         self._reader = None
-        self._gpu = torch.cuda.is_available()
+        global _torch_loaded
+        if not _torch_loaded:
+            try:
+                import torch as _torch
+
+                _torch_loaded = True
+                self._gpu = _torch.cuda.is_available()
+            except ImportError:
+                self._gpu = False
+        else:
+            self._gpu = False
         # Manga/manhwa için çoklu dil desteği
         self._langs = self._get_optimal_langs()
         logger.info(
@@ -93,10 +107,18 @@ class EasyOCREngine(OCREngine):
 
     def _get_reader(self):
         if self._reader is None:
-            self._reader = easyocr.Reader(
+            global _easyocr_loaded
+            if not _easyocr_loaded:
+                try:
+                    import easyocr as _easyocr
+
+                    _easyocr_loaded = True
+                except ImportError:
+                    raise RuntimeError("easyocr kurulu değil: pip install easyocr")
+            self._reader = _easyocr.Reader(
                 self._langs,
                 gpu=self._gpu,
-                model_storage_directory=None,  # Varsayılan cache
+                model_storage_directory=None,
                 download_enabled=True,
             )
         return self._reader
@@ -620,7 +642,7 @@ class PaddleOCREngine(OCREngine):
                     use_angle_cls=True,
                     lang=lang,
                     show_log=False,
-                    use_gpu=torch.cuda.is_available(),
+                    use_gpu=_torch_loaded,
                 )
             self._ocr = _paddle_ocr_instance
             logger.info("PaddleOCR başarıyla yüklendi (lang=%s)", lang)

@@ -747,7 +747,9 @@ class OCRTranslateApp(QObject):
                     if self._overlay:
                         self._overlay.update_region(curr)
                     if self._worker:
-                        self._worker.update_params(region=curr)
+                        self._worker.update_params(
+                            region=curr, uuid=self._tracking_uuid
+                        )
             else:
                 # Pencere muhtemelen kapandı veya UUID geçersiz
                 logger.warning(
